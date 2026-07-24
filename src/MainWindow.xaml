@@ -1079,6 +1079,7 @@
                                 <ComboBoxItem Content="日本語" Tag="ja"/>
                                 <ComboBoxItem Content="한국어" Tag="ko"/>
                                 <ComboBoxItem Content="Русский" Tag="ru"/>
+                                <ComboBoxItem Content="Brasil" Tag="pt_br"/>
                             </ComboBox>
 
                             <TextBlock Text="|" Foreground="{DynamicResource BorderBrush}" Margin="16,0" VerticalAlignment="Center"/>
