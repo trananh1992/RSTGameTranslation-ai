@@ -716,6 +716,15 @@ namespace RSTGameTranslation
                                             // twice and cause the text to be spoken twice.
                                             _lastChangeTime = DateTime.MinValue;
                                             MainWindow.Instance.AddTranslationToHistory(combinedText, combinedText);
+
+                                            // Mirror the one-shot latch normally set at the end of
+                                            // TranslateTextObjectsAsync: when auto-OCR is off, stop
+                                            // after this OCR pass so the capture loop does not keep
+                                            // re-running OCR (OCR once per trigger, no translation).
+                                            if (!ConfigManager.Instance.IsAutoOCREnabled())
+                                            {
+                                                MainWindow.Instance.isStopOCR = true;
+                                            }
                                         }
                                     }
 

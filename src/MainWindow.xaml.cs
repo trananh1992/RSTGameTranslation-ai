@@ -79,6 +79,23 @@ namespace RSTGameTranslation
         public bool GetOCRCheckIsWanted() { return _bOCRCheckIsWanted; }
         private bool isStarted = false;
         public bool isStopOCR = false;
+
+        // Central gate deciding whether the capture loop should run OCR this tick.
+        // Semantics:
+        //   - Auto-OCR on  -> run every tick (continuous mode).
+        //   - Auto-OCR off -> single-shot: OCR runs until one pass completes,
+        //     then the isStopOCR latch is set and OCR stops. The latch is set
+        //     at the end of a completed pass: in Logic.TranslateTextObjectsAsync
+        //     when translation runs, or in Logic's translate-disabled branch
+        //     (auto-translate off = OCR once per trigger without translating).
+        //     The Start button clears the latch to arm the next single shot.
+        private bool ShouldPerformOcrNow()
+        {
+            if (!GetIsStarted() || !GetOCRCheckIsWanted())
+                return false;
+
+            return !isStopOCR || ConfigManager.Instance.IsAutoOCREnabled();
+        }
         private DispatcherTimer _captureTimer;
         private string outputPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, DEFAULT_OUTPUT_PATH);
         private WindowInteropHelper helper;
@@ -2037,8 +2054,7 @@ namespace RSTGameTranslation
                                         MonitorWindow.Instance.UpdateScreenshotFromBitmap();
                                     }
 
-                                    bool shouldPerformOcr = GetIsStarted() && GetOCRCheckIsWanted() &&
-                                        (!isStopOCR || ConfigManager.Instance.IsAutoOCREnabled());
+                                    bool shouldPerformOcr = ShouldPerformOcrNow();
 
                                     if (shouldPerformOcr)
                                     {
@@ -2078,8 +2094,7 @@ namespace RSTGameTranslation
                                     MonitorWindow.Instance.UpdateScreenshotFromBitmap();
                                 }
 
-                                bool shouldPerformOcr = GetIsStarted() && GetOCRCheckIsWanted() &&
-                                    (!isStopOCR || ConfigManager.Instance.IsAutoOCREnabled());
+                                bool shouldPerformOcr = ShouldPerformOcrNow();
 
                                 if (shouldPerformOcr)
                                 {
@@ -2220,8 +2235,7 @@ namespace RSTGameTranslation
                             SaveMaskedBitmapToFile(maskedBitmap, outputPath);
 
                             // Perform OCR with the masked bitmap
-                            bool shouldProcessOcr = GetIsStarted() && GetOCRCheckIsWanted() &&
-                                                (!isStopOCR || ConfigManager.Instance.IsAutoOCREnabled());
+                            bool shouldProcessOcr = ShouldPerformOcrNow();
 
                             if (shouldProcessOcr)
                             {
@@ -2259,8 +2273,7 @@ namespace RSTGameTranslation
                         MonitorWindow.Instance.UpdateScreenshotFromBitmap();
                     }
 
-                    bool shouldPerformOcr = GetIsStarted() && GetOCRCheckIsWanted() &&
-                                        (!isStopOCR || ConfigManager.Instance.IsAutoOCREnabled());
+                    bool shouldPerformOcr = ShouldPerformOcrNow();
 
                     if (shouldPerformOcr)
                     {
