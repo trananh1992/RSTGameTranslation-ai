@@ -31,8 +31,9 @@ namespace RSTGameTranslation
                     stream = false,
                     options = new
                     {
-                        temperature = 0.1, // Lower temperature for more deterministic output
-                        top_p = 0.9
+                        temperature = ConfigManager.Instance.GetOllamaTemperature(),
+                        top_p = ConfigManager.Instance.GetOllamaTopP(),
+                        top_k = ConfigManager.Instance.GetOllamaTopK()
                     },
                     format = "json" // Request JSON formatted response
                 };

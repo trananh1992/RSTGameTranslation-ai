@@ -1118,6 +1118,9 @@ namespace RSTGameTranslation
             ollamaUrlTextBox.Text = ConfigManager.Instance.GetOllamaUrl();
             ollamaPortTextBox.Text = ConfigManager.Instance.GetOllamaPort();
             ollamaModelTextBox.Text = ConfigManager.Instance.GetOllamaModel();
+            ollamaTemperatureTextBox.Text = ConfigManager.Instance.GetOllamaTemperature().ToString(CultureInfo.InvariantCulture);
+            ollamaTopPTextBox.Text = ConfigManager.Instance.GetOllamaTopP().ToString(CultureInfo.InvariantCulture);
+            ollamaTopKTextBox.Text = ConfigManager.Instance.GetOllamaTopK().ToString(CultureInfo.InvariantCulture);
 
             // Initialize LM Studio settings
             lmstudioUrlTextBox.Text = ConfigManager.Instance.GetLMStudioUrl();
@@ -1863,6 +1866,9 @@ namespace RSTGameTranslation
                 if (ollamaUrlLabel == null || ollamaUrlTextBox == null ||
                     ollamaPortLabel == null || ollamaPortTextBox == null ||
                     ollamaModelLabel == null || ollamaModelGrid == null ||
+                    ollamaTemperatureLabel == null || ollamaTemperatureTextBox == null ||
+                    ollamaTopPLabel == null || ollamaTopPTextBox == null ||
+                    ollamaTopKLabel == null || ollamaTopKTextBox == null ||
                     lmstudioUrlLabel == null || lmstudioUrlTextBox == null ||
                     lmstudioPortLabel == null || lmstudioPortTextBox == null ||
                     lmstudioModelLabel == null || lmstudioModelGrid == null ||
@@ -1934,6 +1940,12 @@ namespace RSTGameTranslation
                 ollamaPortTextBox.Visibility = isOllamaSelected ? Visibility.Visible : Visibility.Collapsed;
                 ollamaModelLabel.Visibility = isOllamaSelected ? Visibility.Visible : Visibility.Collapsed;
                 ollamaModelGrid.Visibility = isOllamaSelected ? Visibility.Visible : Visibility.Collapsed;
+                ollamaTemperatureLabel.Visibility = isOllamaSelected ? Visibility.Visible : Visibility.Collapsed;
+                ollamaTemperatureTextBox.Visibility = isOllamaSelected ? Visibility.Visible : Visibility.Collapsed;
+                ollamaTopPLabel.Visibility = isOllamaSelected ? Visibility.Visible : Visibility.Collapsed;
+                ollamaTopPTextBox.Visibility = isOllamaSelected ? Visibility.Visible : Visibility.Collapsed;
+                ollamaTopKLabel.Visibility = isOllamaSelected ? Visibility.Visible : Visibility.Collapsed;
+                ollamaTopKTextBox.Visibility = isOllamaSelected ? Visibility.Visible : Visibility.Collapsed;
 
                 // Show/hide LM Studio-specific settings
                 lmstudioUrlLabel.Visibility = isLMStudioSelected ? Visibility.Visible : Visibility.Collapsed;
@@ -2103,6 +2115,9 @@ namespace RSTGameTranslation
                     ollamaUrlTextBox.Text = ConfigManager.Instance.GetOllamaUrl();
                     ollamaPortTextBox.Text = ConfigManager.Instance.GetOllamaPort();
                     ollamaModelTextBox.Text = ConfigManager.Instance.GetOllamaModel();
+                    ollamaTemperatureTextBox.Text = ConfigManager.Instance.GetOllamaTemperature().ToString(CultureInfo.InvariantCulture);
+                    ollamaTopPTextBox.Text = ConfigManager.Instance.GetOllamaTopP().ToString(CultureInfo.InvariantCulture);
+                    ollamaTopKTextBox.Text = ConfigManager.Instance.GetOllamaTopK().ToString(CultureInfo.InvariantCulture);
                 }
                 else if (isLMStudioSelected)
                 {
@@ -2546,6 +2561,48 @@ namespace RSTGameTranslation
 
                 // Clear any existing text objects to refresh the display
                 Logic.Instance.ClearAllTextObjects();
+            }
+        }
+
+        // Ollama Temperature changed
+        private void OllamaTemperatureTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isInitializing || sender != ollamaTemperatureTextBox)
+                return;
+
+            string text = ollamaTemperatureTextBox.Text.Trim();
+            if (float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float temperature))
+            {
+                ConfigManager.Instance.SetOllamaTemperature(temperature);
+                Console.WriteLine($"Ollama temperature set to: {temperature}");
+            }
+        }
+
+        // Ollama Top P changed
+        private void OllamaTopPTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isInitializing || sender != ollamaTopPTextBox)
+                return;
+
+            string text = ollamaTopPTextBox.Text.Trim();
+            if (float.TryParse(text, NumberStyles.Float, CultureInfo.InvariantCulture, out float topP))
+            {
+                ConfigManager.Instance.SetOllamaTopP(topP);
+                Console.WriteLine($"Ollama top_p set to: {topP}");
+            }
+        }
+
+        // Ollama Top K changed
+        private void OllamaTopKTextBox_TextChanged(object sender, TextChangedEventArgs e)
+        {
+            if (_isInitializing || sender != ollamaTopKTextBox)
+                return;
+
+            string text = ollamaTopKTextBox.Text.Trim();
+            if (int.TryParse(text, out int topK))
+            {
+                ConfigManager.Instance.SetOllamaTopK(topK);
+                Console.WriteLine($"Ollama top_k set to: {topK}");
             }
         }
 

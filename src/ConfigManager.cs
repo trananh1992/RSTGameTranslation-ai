@@ -80,6 +80,9 @@ namespace RSTGameTranslation
         public const string OLLAMA_URL = "ollama_url";
         public const string OLLAMA_PORT = "ollama_port";
         public const string OLLAMA_MODEL = "ollama_model";
+        public const string OLLAMA_TEMPERATURE = "ollama_temperature";
+        public const string OLLAMA_TOP_P = "ollama_top_p";
+        public const string OLLAMA_TOP_K = "ollama_top_k";
         public const string LM_STUDIO_URL = "lm_studio_url";
         public const string LM_STUDIO_PORT = "lm_studio_port";
         public const string LM_STUDIO_MODEL = "lm_studio_model";
@@ -518,6 +521,9 @@ namespace RSTGameTranslation
             _configValues[LM_STUDIO_PORT] = (1234).ToString(CultureInfo.InvariantCulture);
             _configValues[OCR_METHOD] = "OneOCR";
             _configValues[OLLAMA_MODEL] = "gemma3:12b";
+            _configValues[OLLAMA_TEMPERATURE] = (0.1).ToString(CultureInfo.InvariantCulture);
+            _configValues[OLLAMA_TOP_P] = (0.9).ToString(CultureInfo.InvariantCulture);
+            _configValues[OLLAMA_TOP_K] = (40).ToString(CultureInfo.InvariantCulture);
             _configValues[LM_STUDIO_MODEL] = "google/gemma-3-4b";
             _configValues[SOURCE_LANGUAGE] = "en";
             _configValues[TARGET_LANGUAGE] = "vi";
@@ -1195,6 +1201,51 @@ namespace RSTGameTranslation
                 SaveConfig();
                 Console.WriteLine($"Ollama model set to: {model}");
             }
+        }
+
+        // Get/Set Ollama Temperature
+        public float GetOllamaTemperature()
+        {
+            string val = GetValue(OLLAMA_TEMPERATURE, "0.1");
+            if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float result))
+                return result;
+            return 0.1f;
+        }
+
+        public void SetOllamaTemperature(float temperature)
+        {
+            _configValues[OLLAMA_TEMPERATURE] = temperature.ToString(CultureInfo.InvariantCulture);
+            SaveConfig();
+        }
+
+        // Get/Set Ollama Top P
+        public float GetOllamaTopP()
+        {
+            string val = GetValue(OLLAMA_TOP_P, "0.9");
+            if (float.TryParse(val, NumberStyles.Float, CultureInfo.InvariantCulture, out float result))
+                return result;
+            return 0.9f;
+        }
+
+        public void SetOllamaTopP(float topP)
+        {
+            _configValues[OLLAMA_TOP_P] = topP.ToString(CultureInfo.InvariantCulture);
+            SaveConfig();
+        }
+
+        // Get/Set Ollama Top K
+        public int GetOllamaTopK()
+        {
+            string val = GetValue(OLLAMA_TOP_K, "40");
+            if (int.TryParse(val, out int result))
+                return result;
+            return 40;
+        }
+
+        public void SetOllamaTopK(int topK)
+        {
+            _configValues[OLLAMA_TOP_K] = topK.ToString(CultureInfo.InvariantCulture);
+            SaveConfig();
         }
 
         // Get the full Ollama API endpoint

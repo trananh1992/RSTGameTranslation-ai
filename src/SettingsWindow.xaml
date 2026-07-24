@@ -1316,6 +1316,30 @@
                                     </StackPanel>
                                 </Grid>
 
+                                <!-- Ollama Temperature - Only visible when Ollama is selected -->
+                                <TextBlock x:Name="ollamaTemperatureLabel" Text="Temperature:" Grid.Row="4" Grid.Column="0" 
+                                          VerticalAlignment="Center" Margin="0,5,10,0" Visibility="Collapsed"
+                                          ToolTip="Controls randomness: lower = more deterministic, higher = more creative (0.0 - 2.0)"/>
+                                <TextBox x:Name="ollamaTemperatureTextBox" Grid.Row="4" Grid.Column="1" 
+                                        Margin="0,5" Text="0.1" Visibility="Collapsed"
+                                        TextChanged="OllamaTemperatureTextBox_TextChanged"/>
+
+                                <!-- Ollama Top P - Only visible when Ollama is selected -->
+                                <TextBlock x:Name="ollamaTopPLabel" Text="Top P:" Grid.Row="5" Grid.Column="0" 
+                                          VerticalAlignment="Center" Margin="0,5,10,0" Visibility="Collapsed"
+                                          ToolTip="Nucleus sampling: cumulative probability threshold (0.0 - 1.0)"/>
+                                <TextBox x:Name="ollamaTopPTextBox" Grid.Row="5" Grid.Column="1" 
+                                        Margin="0,5" Text="0.9" Visibility="Collapsed"
+                                        TextChanged="OllamaTopPTextBox_TextChanged"/>
+
+                                <!-- Ollama Top K - Only visible when Ollama is selected -->
+                                <TextBlock x:Name="ollamaTopKLabel" Text="Top K:" Grid.Row="6" Grid.Column="0" 
+                                          VerticalAlignment="Center" Margin="0,5,10,0" Visibility="Collapsed"
+                                          ToolTip="Limits the next token selection to the K most likely tokens (1 - 100)"/>
+                                <TextBox x:Name="ollamaTopKTextBox" Grid.Row="6" Grid.Column="1" 
+                                        Margin="0,5" Text="40" Visibility="Collapsed"
+                                        TextChanged="OllamaTopKTextBox_TextChanged"/>
+
                                 <!-- LM Studio URL - Only visible when LM Studio is selected -->
                                 <TextBlock x:Name="lmstudioUrlLabel" Text="LM Studio URL:" Grid.Row="1" Grid.Column="0" 
                                           VerticalAlignment="Top" Margin="0,8,10,0" Visibility="Collapsed"/>
