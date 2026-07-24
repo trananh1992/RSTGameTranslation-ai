@@ -531,7 +531,10 @@ namespace RSTGameTranslation
             _configValues[SUPERTONIC_MODEL_DIR] = "Supertonic";
             _configValues[SUPERTONIC_VOICE_STYLE] = "F2";
             _configValues[SUPERTONIC_TOTAL_STEPS] = (5).ToString(CultureInfo.InvariantCulture);
-            _configValues[SUPERTONIC_SPEED] = (2f).ToString(CultureInfo.InvariantCulture);
+            // Supertonic default speed must stay in the stable range (1.05..1.3).
+            // Higher values (e.g. 2.0) compress the final words into the last
+            // latent chunk boundary and the ending becomes inaudible.
+            _configValues[SUPERTONIC_SPEED] = (1.05f).ToString(CultureInfo.InvariantCulture);
             _configValues[TTS_ENABLED] = "false";
             _configValues[MAX_CONTEXT_PIECES] = (20).ToString(CultureInfo.InvariantCulture);
             _configValues[MIN_CONTEXT_SIZE] = (8).ToString(CultureInfo.InvariantCulture);
@@ -2618,19 +2621,32 @@ namespace RSTGameTranslation
             Console.WriteLine($"Supertonic total steps set to: {steps}");
         }
 
-        // Get/Set Supertonic speed factor (0.5..2.0, default 1.05)
+        // Get/Set Supertonic speed factor (1.05..1.3, default 1.05).
+        // Values above ~1.3 make the duration predictor compress the final
+        // words into the last latent chunk boundary, which renders them
+        // inaudible ("nuốt chữ cuối"), so the allowed range is intentionally
+        // narrow.
+        public const float SUPERTONIC_MIN_SPEED = 1.05f;
+        public const float SUPERTONIC_MAX_SPEED = 2.0f;
+
         public float GetSupertonicSpeed()
         {
             if (float.TryParse(GetValue(SUPERTONIC_SPEED, "1.05"), NumberStyles.Float,
                                CultureInfo.InvariantCulture, out float v))
+            {
+                // Clamp legacy/out-of-range values (e.g. old default of 2.0)
+                // so existing configs get healed on read.
+                if (v < SUPERTONIC_MIN_SPEED) return SUPERTONIC_MIN_SPEED;
+                if (v > SUPERTONIC_MAX_SPEED) return SUPERTONIC_MAX_SPEED;
                 return v;
+            }
             return 1.05f;
         }
 
         public void SetSupertonicSpeed(float speed)
         {
-            if (speed < 0.5f) speed = 0.5f;
-            if (speed > 2.0f) speed = 2.0f;
+            if (speed < SUPERTONIC_MIN_SPEED) speed = SUPERTONIC_MIN_SPEED;
+            if (speed > SUPERTONIC_MAX_SPEED) speed = SUPERTONIC_MAX_SPEED;
             _configValues[SUPERTONIC_SPEED] = speed.ToString(CultureInfo.InvariantCulture);
             SaveConfig();
             Console.WriteLine($"Supertonic speed set to: {speed}");

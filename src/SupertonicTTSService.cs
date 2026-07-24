@@ -687,6 +687,9 @@ namespace RSTGameTranslation
         private static readonly string _tempDir = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "temp");
         private static System.Timers.Timer? _cleanupTimer;
 
+        // Extra silence appended after every synthesized utterance (seconds).
+        private const float TailPadSeconds = 0.35f;
+
         private static readonly string[] RequiredOnnxFiles =
         {
             "duration_predictor.onnx", "text_encoder.onnx",
@@ -868,11 +871,13 @@ namespace RSTGameTranslation
                     return false;
                 }
 
-                if (!await _speechSemaphore.WaitAsync(0))
-                {
-                    Console.WriteLine("Supertonic: another speech request in progress, skipping");
-                    return false;
-                }
+                // Wait for any in-flight synthesis to finish instead of dropping
+                // the request. Dropping (WaitAsync(0)) caused whole sentences to
+                // silently vanish whenever text arrived faster than the (slow,
+                // CPU-bound) synthesis - users perceived it as "bỏ dở câu".
+                // While we wait here, the ChatBoxWindow layer keeps batching new
+                // lines, so backlog stays bounded.
+                await _speechSemaphore.WaitAsync();
 
                 try
                 {
@@ -885,8 +890,8 @@ namespace RSTGameTranslation
                     if (string.IsNullOrWhiteSpace(voiceStyle)) voiceStyle = "M1";
                     if (totalSteps < 1) totalSteps = 1;
                     if (totalSteps > 32) totalSteps = 32;
-                    if (speed < 0.5f) speed = 0.5f;
-                    if (speed > 2.0f) speed = 2.0f;
+                    if (speed < ConfigManager.SUPERTONIC_MIN_SPEED) speed = ConfigManager.SUPERTONIC_MIN_SPEED;
+                    if (speed > ConfigManager.SUPERTONIC_MAX_SPEED) speed = ConfigManager.SUPERTONIC_MAX_SPEED;
 
                     // Ensure model + style are loaded (lazy). Catches errors
                     // here so the user gets a clear MessageBox instead of
@@ -928,8 +933,18 @@ namespace RSTGameTranslation
                         return false;
                     }
 
+                    // Pad a short silence tail so the final word can decay
+                    // naturally. Without this the vocoder output ends exactly at
+                    // the last latent chunk boundary and the tail of the last
+                    // syllable can feel clipped, especially right before the
+                    // player switches to the next queued file.
+                    int sampleRate = _tts!.SampleRate;
+                    int tailPad = (int)(TailPadSeconds * sampleRate);
+                    var padded = new float[wav.Length + tailPad];
+                    Array.Copy(wav, padded, wav.Length);
+
                     string audioFilePath = Path.Combine(_tempDir, $"tts_supertonic_{DateTime.Now.Ticks}.wav");
-                    await Task.Run(() => Supertonic.StHelper.WriteWavFile(audioFilePath, wav, _tts!.SampleRate));
+                    await Task.Run(() => Supertonic.StHelper.WriteWavFile(audioFilePath, padded, sampleRate));
 
                     lock (_tempFilesToDelete)
                     {
@@ -994,7 +1009,13 @@ namespace RSTGameTranslation
                         }
                     }
                 }
-                _isProcessingQueue = false;
+                // NOTE: do NOT reset _isProcessingQueue here. The queue processor
+                // task resets it itself when it observes the emptied queue. If we
+                // cleared the flag while a processor is still draining, the next
+                // EnqueueAudioFile would spawn a SECOND processor task and the two
+                // could fight over playback (each loop iteration calls
+                // StopCurrentPlayback before playing), which manifests as a
+                // sentence being cut mid-way when new text arrives.
             }
             catch (Exception ex)
             {
@@ -1132,8 +1153,9 @@ namespace RSTGameTranslation
             try
             {
                 _isPlayingAudio = true;
-                _playbackCancellationTokenSource = new CancellationTokenSource();
-                var cancellationToken = _playbackCancellationTokenSource.Token;
+                var cts = new CancellationTokenSource();
+                _playbackCancellationTokenSource = cts;
+                var cancellationToken = cts.Token;
 
                 _currentPlayer = new WaveOutEvent { DesiredLatency = 100 };
                 _currentPlayer.PlaybackStopped += (sender, args) =>
@@ -1144,6 +1166,11 @@ namespace RSTGameTranslation
                     _currentPlayer = null;
                     _currentAudioFile?.Dispose();
                     _currentAudioFile = null;
+                    // Release this playback's CTS so cancelled instances never
+                    // linger in the static field (see StopCurrentPlayback).
+                    if (ReferenceEquals(_playbackCancellationTokenSource, cts))
+                        _playbackCancellationTokenSource = null;
+                    try { cts.Dispose(); } catch { }
                     lock (_activeAudioFiles) _activeAudioFiles.Remove(filePath);
                     DeleteFileWithRetry(filePath);
                     tcs.TrySetResult(true);
@@ -1179,16 +1206,43 @@ namespace RSTGameTranslation
 
         private void StopCurrentPlayback()
         {
+            // Mirror WindowsTTSService.StopCurrentPlayback: cancel + dispose the
+            // CTS (never leave a cancelled instance behind - PlayAudioFileAsync
+            // overwrites the field on every play, so a stale cancelled CTS here
+            // could orphan the *next* playback's token and make StopAllTTS miss
+            // it), then synchronously stop and release the player.
+            if (!_isPlayingAudio) return;
+
             try
             {
-                if (_currentPlayer != null && _isPlayingAudio)
+                Console.WriteLine("Supertonic: stopping current audio playback");
+
+                if (_playbackCancellationTokenSource != null)
                 {
-                    _playbackCancellationTokenSource?.Cancel();
+                    try { _playbackCancellationTokenSource.Cancel(); } catch { }
+                    _playbackCancellationTokenSource.Dispose();
+                    _playbackCancellationTokenSource = null;
                 }
+
+                if (_currentPlayer != null)
+                {
+                    try { _currentPlayer.Stop(); } catch { }
+                    _currentPlayer.Dispose();
+                    _currentPlayer = null;
+                }
+
+                if (_currentAudioFile != null)
+                {
+                    _currentAudioFile.Dispose();
+                    _currentAudioFile = null;
+                }
+
+                _isPlayingAudio = false;
             }
             catch (Exception ex)
             {
                 Console.WriteLine($"StopCurrentPlayback: {ex.Message}");
+                _isPlayingAudio = false;
             }
         }
 

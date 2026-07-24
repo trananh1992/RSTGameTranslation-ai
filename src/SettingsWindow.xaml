@@ -1732,7 +1732,7 @@
 
                                 <!-- Speed -->
                                 <TextBlock Text="Speech speed:" Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Margin="0,5,10,0"
-                                           ToolTip="0.9 = slower, 1.05 = natural, 1.5 = faster. Range 0.5 - 2.0."/>
+                                           ToolTip="1.05 = natural, 2.0 = fastest stable. Range 1.05 - 2.0 (higher values cut off the final words)."/>
                                 <TextBox x:Name="supertonicSpeedTextBox" Grid.Row="3" Grid.Column="1" Margin="0,5"
                                          LostFocus="SupertonicSpeedTextBox_LostFocus"/>
 
