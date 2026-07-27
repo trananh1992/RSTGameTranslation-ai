@@ -2085,7 +2085,8 @@
                                     <ColumnDefinition Width="Auto"/>
                                     <ColumnDefinition Width="*"/>
                                 </Grid.ColumnDefinitions>
-                                <Grid.RowDefinitions>
+                                                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
                                     <RowDefinition Height="Auto"/>
@@ -2108,33 +2109,42 @@
                                          Unchecked="AudioServiceAutoTranslateCheckBox_CheckedChanged"/>
                                 <TextBlock Text="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Lbl_Provider]}" Grid.Row="1" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0"/>
                                 <ComboBox x:Name="audioProcessingProviderComboBox" Grid.Row="1" Grid.Column="1" Margin="0,5" SelectionChanged="AudioProcessingProviderComboBox_SelectionChanged">
-                                    <ComboBoxItem Content="WhisperX"/>
+                                    <ComboBoxItem Content="Whisper"/>
+                                    <ComboBoxItem Content="FunASR (SenseVoice)"/>
                                 </ComboBox>
                                 <TextBlock Text="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Lbl_Model]}" Grid.Row="2" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0"/>
                                 <ComboBox x:Name="audioProcessingModelComboBox" Grid.Row="2" Grid.Column="1" Margin="0,5" SelectionChanged="AudioProcessingModelComboBox_SelectionChanged">
                                     <ComboBoxItem Content="ggml-tiny"/>
                                 </ComboBox>
-                                <TextBlock Text="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Lbl_WhisperRuntime]}" Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0"/>
+                                <TextBlock x:Name="whisperRuntimeLabel" Text="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Lbl_WhisperRuntime]}" Grid.Row="3" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0"/>
                                 <ComboBox x:Name="whisperRuntimeComboBox" Grid.Row="3" Grid.Column="1" Margin="0,5" SelectionChanged="WhisperRuntimeComboBox_SelectionChanged">
                                     <ComboBoxItem Content="CPU" Tag="cpu"/>
                                     <ComboBoxItem Content="CUDA (NVIDIA GPU)" Tag="cuda"/>
                                     <ComboBoxItem Content="Vulkan (GPU)" Tag="vulkan"/>
                                 </ComboBox>
-                                <TextBlock Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" 
+                                <TextBlock x:Name="whisperRuntimeTip" Grid.Row="4" Grid.Column="1" Grid.ColumnSpan="2" 
                                         Margin="0,0,0,5" 
                                         FontStyle="Italic" 
                                         FontSize="11" 
                                         Foreground="{DynamicResource MutedBrush}"
                                         TextWrapping="Wrap"
                                         Text="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Tip_WhisperRuntime]}"/>
-                                <TextBlock x:Name="audioModelDownloadTextBlock"
-                                        Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" 
-                                        Margin="0,0,0,0" 
-                                        FontStyle="Italic" 
-                                        FontSize="11" 
-                                        Foreground="{DynamicResource DangerBrush}"
-                                        TextWrapping="Wrap"
-                                        Loaded="AudioModelDownloadTextBlock_Loaded"/>
+                                <StackPanel Grid.Row="5" Grid.Column="1" Grid.ColumnSpan="2" Orientation="Vertical">
+                                    <TextBlock x:Name="audioModelDownloadTextBlock"
+                                            Margin="0,0,0,5" 
+                                            FontStyle="Italic" 
+                                            FontSize="11" 
+                                            Foreground="{DynamicResource DangerBrush}"
+                                            TextWrapping="Wrap"
+                                            Loaded="AudioModelDownloadTextBlock_Loaded"/>
+                                    <Button x:Name="funAsrDownloadButton"
+                                            Content="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Btn_DownloadFunAsrModel]}"
+                                            Margin="0,0,0,5"
+                                            Padding="8,3"
+                                            HorizontalAlignment="Left"
+                                            Visibility="Collapsed"
+                                            Click="FunAsrDownloadButton_Click"/>
+                                </StackPanel>
                                 <TextBlock Text="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Lbl_VolumeThreshold]}" Grid.Row="6" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0"/>
                                 <TextBox x:Name="silenceThresholdTextBox" Grid.Row="6" Grid.Column="1" Margin="0,5" Text="0.01" LostFocus="SilenceThresholdTextBox_LostFocus"/>
                                 <TextBlock Grid.Row="7" Grid.Column="1" Grid.ColumnSpan="2" 
@@ -2171,6 +2181,20 @@
                                         Foreground="{DynamicResource DangerBrush}"
                                         TextWrapping="Wrap"
                                         Text="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Tip_WhisperThreadCount]}"/>
+                                <TextBlock x:Name="funAsrLanguageLabel" Text="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Lbl_FunAsrLanguage]}" Grid.Row="14" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0" Visibility="Collapsed"/>
+                                <ComboBox x:Name="funAsrLanguageComboBox" Grid.Row="14" Grid.Column="1" Margin="0,5" Visibility="Collapsed" SelectionChanged="FunAsrLanguageComboBox_SelectionChanged">
+                                    <ComboBoxItem Content="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[FunAsrLang_Auto]}" Tag="auto"/>
+                                    <ComboBoxItem Content="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[FunAsrLang_Japanese]}" Tag="ja"/>
+                                    <ComboBoxItem Content="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[FunAsrLang_English]}" Tag="en"/>
+                                    <ComboBoxItem Content="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[FunAsrLang_Chinese]}" Tag="zh"/>
+                                    <ComboBoxItem Content="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[FunAsrLang_Korean]}" Tag="ko"/>
+                                    <ComboBoxItem Content="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[FunAsrLang_Cantonese]}" Tag="yue"/>
+                                </ComboBox>
+                                <TextBlock x:Name="funAsrPrecisionLabel" Text="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Lbl_FunAsrPrecision]}" Grid.Row="15" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0" Visibility="Collapsed"/>
+                                <ComboBox x:Name="funAsrPrecisionComboBox" Grid.Row="15" Grid.Column="1" Margin="0,5" Visibility="Collapsed" SelectionChanged="FunAsrPrecisionComboBox_SelectionChanged">
+                                    <ComboBoxItem Content="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[FunAsrPrecision_fp32]}" Tag="fp32"/>
+                                    <ComboBoxItem Content="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[FunAsrPrecision_int8]}" Tag="int8"/>
+                                </ComboBox>
                             </Grid>
                         </GroupBox>
                     </StackPanel>

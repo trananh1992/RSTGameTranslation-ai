@@ -177,6 +177,10 @@ namespace RSTGameTranslation
 
                 ConfigManager.Instance.SetOcrMethod(configOcrMethod);
                 ConfigManager.Instance.SetTranslationService(configTransService);
+                if(ConfigManager.Instance.GetAudioProcessingProvider() == "FunASR")
+                {
+                    localWhisperService.Instance.CreateEngine().Initialize();
+                }
 
                 Console.WriteLine("Settings window fully loaded and initialized. Changes will now be saved.");
             }
@@ -982,7 +986,10 @@ namespace RSTGameTranslation
 
             audioProcessingModelComboBox.SelectionChanged -= AudioProcessingModelComboBox_SelectionChanged;
 
-            // Set audio processing model
+            // Set audio processing model (provider-specific: whisper *.bin name or FunASR model folder name)
+            string savedAudioModel = string.Equals(ConfigManager.Instance.GetAudioProcessingProvider(), "FunASR", StringComparison.OrdinalIgnoreCase)
+                ? ConfigManager.Instance.GetFunAsrModel()
+                : ConfigManager.Instance.GetAudioProcessingModel();
             foreach (var item in audioProcessingModelComboBox.Items)
             {
                 string itemText = "";
@@ -994,13 +1001,19 @@ namespace RSTGameTranslation
                 {
                     itemText = item.ToString() ?? "";
                 }
-                if (string.Equals(itemText.Trim(), ConfigManager.Instance.GetAudioProcessingModel(), StringComparison.OrdinalIgnoreCase))
+                if (string.Equals(itemText.Trim(), savedAudioModel, StringComparison.OrdinalIgnoreCase))
                 {
                     Console.WriteLine($"Found matching audio processing model: '{itemText}'");
                     audioProcessingModelComboBox.SelectedItem = item;
                     UpdateWhisperThreadCountVisibility(itemText);
                     break;
                 }
+            }
+
+            // If config holds a stale/legacy value (e.g. a file name), fall back to the first available model
+            if (audioProcessingModelComboBox.SelectedItem == null && audioProcessingModelComboBox.Items.Count > 0)
+            {
+                audioProcessingModelComboBox.SelectedIndex = 0;
             }
 
             audioProcessingModelComboBox.SelectionChanged += AudioProcessingModelComboBox_SelectionChanged;
@@ -1226,8 +1239,42 @@ namespace RSTGameTranslation
             // Load exclude regions
             LoadExcludeRegions();
 
-            // Audio Processing settings
-            audioProcessingProviderComboBox.SelectedIndex = 0; // Only one for now
+            // Audio Processing settings — select provider from config (normalized: "Whisper" or "FunASR")
+            string savedProvider = ConfigManager.Instance.GetAudioProcessingProvider();
+            foreach (var item in audioProcessingProviderComboBox.Items)
+            {
+                if (item is ComboBoxItem cbItem && (cbItem.Content?.ToString() ?? "").StartsWith(savedProvider, StringComparison.OrdinalIgnoreCase))
+                {
+                    audioProcessingProviderComboBox.SelectedItem = cbItem;
+                    break;
+                }
+            }
+            if (audioProcessingProviderComboBox.SelectedItem == null && audioProcessingProviderComboBox.Items.Count > 0)
+            {
+                audioProcessingProviderComboBox.SelectedIndex = 0;
+            }
+            UpdateProviderDependentVisibility();
+
+            // Load FunASR language + precision selections
+            string funasrLang = ConfigManager.Instance.GetFunAsrLanguage();
+            foreach (var item in funAsrLanguageComboBox.Items)
+            {
+                if (item is ComboBoxItem cb && string.Equals(cb.Tag?.ToString(), funasrLang, StringComparison.OrdinalIgnoreCase))
+                {
+                    funAsrLanguageComboBox.SelectedItem = cb;
+                    break;
+                }
+            }
+            string funasrPrec = ConfigManager.Instance.GetFunAsrModelPrecision();
+            foreach (var item in funAsrPrecisionComboBox.Items)
+            {
+                if (item is ComboBoxItem cb && string.Equals(cb.Tag?.ToString(), funasrPrec, StringComparison.OrdinalIgnoreCase))
+                {
+                    funAsrPrecisionComboBox.SelectedItem = cb;
+                    break;
+                }
+            }
+
             // openAiRealtimeApiKeyPasswordBox.Password = ConfigManager.Instance.GetOpenAiRealtimeApiKey();
             // Load Auto-translate for audio service
             // audioServiceAutoTranslateCheckBox.IsChecked = ConfigManager.Instance.IsAudioServiceAutoTranslateEnabled();
@@ -2989,9 +3036,17 @@ namespace RSTGameTranslation
 
                 if (!string.IsNullOrWhiteSpace(model))
                 {
-                    // Save to config
-                    ConfigManager.Instance.SetAudioProcessingModel(model);
-                    Console.WriteLine($"Audio processing model set from text input to: {model}");
+                    // Save to config (provider-specific key)
+                    if (string.Equals(ConfigManager.Instance.GetAudioProcessingProvider(), "FunASR", StringComparison.OrdinalIgnoreCase))
+                    {
+                        ConfigManager.Instance.SetFunAsrModel(model);
+                        Console.WriteLine($"FunASR model set to: {model}");
+                    }
+                    else
+                    {
+                        ConfigManager.Instance.SetAudioProcessingModel(model);
+                        Console.WriteLine($"Audio processing model set from text input to: {model}");
+                    }
                 }
             }
             catch (Exception ex)
@@ -3070,6 +3125,115 @@ namespace RSTGameTranslation
             whisperThreadCountLabel.Visibility = visibility;
             whisperThreadCountTextBox.Visibility = visibility;
             whisperThreadCountTip.Visibility = visibility;
+        }
+
+        /// <summary>
+        /// Show/hide audio settings rows depending on the selected provider.
+        /// - Whisper: shows runtime (CPU/CUDA/Vulkan) row; thread count per runtime.
+        /// - FunASR: CPU-only, hides the whisper runtime row; thread count always visible
+        ///   (reused as the sherpa-onnx thread count).
+        /// </summary>
+        private void UpdateProviderDependentVisibility()
+        {
+            bool isFunAsr = string.Equals(ConfigManager.Instance.GetAudioProcessingProvider(), "FunASR", StringComparison.OrdinalIgnoreCase);
+            Visibility whisperOnly = isFunAsr ? Visibility.Collapsed : Visibility.Visible;
+
+            whisperRuntimeLabel.Visibility = whisperOnly;
+            whisperRuntimeComboBox.Visibility = whisperOnly;
+            whisperRuntimeTip.Visibility = whisperOnly;
+
+            if (isFunAsr)
+            {
+                whisperThreadCountLabel.Visibility = Visibility.Visible;
+                whisperThreadCountTextBox.Visibility = Visibility.Visible;
+                whisperThreadCountTip.Visibility = Visibility.Visible;
+                if (funAsrDownloadButton != null) funAsrDownloadButton.Visibility = Visibility.Visible;
+                if (funAsrLanguageLabel != null) funAsrLanguageLabel.Visibility = Visibility.Visible;
+                if (funAsrLanguageComboBox != null) funAsrLanguageComboBox.Visibility = Visibility.Visible;
+                if (funAsrPrecisionLabel != null) funAsrPrecisionLabel.Visibility = Visibility.Visible;
+                if (funAsrPrecisionComboBox != null) funAsrPrecisionComboBox.Visibility = Visibility.Visible;
+                RefreshFunAsrModelStatus();
+            }
+            else
+            {
+                UpdateWhisperThreadCountVisibility(ConfigManager.Instance.GetWhisperRuntime());
+                if (funAsrDownloadButton != null) funAsrDownloadButton.Visibility = Visibility.Collapsed;
+                if (funAsrLanguageLabel != null) funAsrLanguageLabel.Visibility = Visibility.Collapsed;
+                if (funAsrLanguageComboBox != null) funAsrLanguageComboBox.Visibility = Visibility.Collapsed;
+                if (funAsrPrecisionLabel != null) funAsrPrecisionLabel.Visibility = Visibility.Collapsed;
+                if (funAsrPrecisionComboBox != null) funAsrPrecisionComboBox.Visibility = Visibility.Collapsed;
+            }
+        }
+
+        /// <summary>
+        /// Update the FunASR download button label and download hint visibility
+        /// based on whether a SenseVoice model is already installed.
+        /// Mirrors RefreshSupertonicModelStatus().
+        /// </summary>
+        private void RefreshFunAsrModelStatus()
+        {
+            if (funAsrDownloadButton == null || audioModelDownloadTextBlock == null) return;
+            try
+            {
+                bool installed = FunAsrModelDownloader.IsModelInstalled();
+                funAsrDownloadButton.Content = installed
+                    ? LocalizationManager.Instance.Strings["Btn_RedownloadFunAsrModel"]
+                    : LocalizationManager.Instance.Strings["Btn_DownloadFunAsrModel"];
+                // Hide the "download from URL" hint once a model is installed; show it when missing
+                audioModelDownloadTextBlock.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"RefreshFunAsrModelStatus error: {ex.Message}");
+            }
+        }
+
+        // FunASR language hint selection
+        private void FunAsrLanguageComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isInitializing) return;
+            try
+            {
+                if (funAsrLanguageComboBox?.SelectedItem is ComboBoxItem item)
+                {
+                    string lang = item.Tag?.ToString() ?? "auto";
+                    ConfigManager.Instance.SetFunAsrLanguage(lang);
+                    // If the audio service is running, it must be restarted to pick up the new language
+                    if (localWhisperService.Instance.IsRunning)
+                    {
+                        localWhisperService.Instance.Stop();
+                        audioServiceAutoTranslateCheckBox.IsChecked = false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating FunASR language: {ex.Message}");
+            }
+        }
+
+        // FunASR model precision (fp32 / int8) selection
+        private void FunAsrPrecisionComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
+        {
+            if (_isInitializing) return;
+            try
+            {
+                if (funAsrPrecisionComboBox?.SelectedItem is ComboBoxItem item)
+                {
+                    string precision = item.Tag?.ToString() ?? "fp32";
+                    ConfigManager.Instance.SetFunAsrModelPrecision(precision);
+                    // If the audio service is running, it must be restarted to load the other model file
+                    if (localWhisperService.Instance.IsRunning)
+                    {
+                        localWhisperService.Instance.Stop();
+                        audioServiceAutoTranslateCheckBox.IsChecked = false;
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating FunASR precision: {ex.Message}");
+            }
         }
 
         private void CustomApiModelTextBox_LostFocus(object sender, RoutedEventArgs e)
@@ -3431,6 +3595,52 @@ namespace RSTGameTranslation
             finally
             {
                 if (supertonicDownloadButton != null) supertonicDownloadButton.IsEnabled = true;
+            }
+        }
+
+        // ==================== FunASR model download ====================
+
+        private async void FunAsrDownloadButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (funAsrDownloadButton != null) funAsrDownloadButton.IsEnabled = false;
+                var downloader = new FunAsrModelDownloader();
+                bool ok = await downloader.DownloadAsync();
+                if (ok)
+                {
+                    // Auto-select the freshly downloaded model
+                    ConfigManager.Instance.SetFunAsrModel("(FunASR root)");
+                    LoadAllAudioProcessingModel();
+                    // Select the root item if present
+                    foreach (var item in audioProcessingModelComboBox.Items)
+                    {
+                        if (item is ComboBoxItem cb && (cb.Content?.ToString() ?? "") == "(FunASR root)")
+                        {
+                            audioProcessingModelComboBox.SelectedItem = cb;
+                            break;
+                        }
+                    }
+                    if (audioProcessingModelComboBox.SelectedItem == null && audioProcessingModelComboBox.Items.Count > 0)
+                    {
+                        audioProcessingModelComboBox.SelectedIndex = 0;
+                    }
+
+                    MessageBox.Show(
+                        LocalizationManager.Instance.Strings["Msg_FunAsrDownloadComplete"],
+                        LocalizationManager.Instance.Strings["Msg_DownloadComplete"], MessageBoxButton.OK, MessageBoxImage.Information);
+                }
+                RefreshFunAsrModelStatus();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Error: {ex.Message}", "Download error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                if (funAsrDownloadButton != null) funAsrDownloadButton.IsEnabled = true;
             }
         }
 
@@ -4265,18 +4475,57 @@ namespace RSTGameTranslation
             audioProcessingModelComboBox.Items.Clear();
 
             HashSet<string> uniqueNames = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+            bool isFunAsr = string.Equals(ConfigManager.Instance.GetAudioProcessingProvider(), "FunASR", StringComparison.OrdinalIgnoreCase);
 
-            List<string?> fileNames = Directory.GetFiles(ConfigManager.Instance._audioProcessingModelFolderPath, "*.bin")
-                .Select(Path.GetFileNameWithoutExtension)
-                .Where(name => !string.IsNullOrEmpty(name))
-                .OrderBy(name => name)
-                .ToList();
-
-            foreach (string? name in fileNames)
+            if (isFunAsr)
             {
-                if (!string.IsNullOrEmpty(name) && uniqueNames.Add(name))
+                // FunASR: model files can sit directly in AudioModel/FunASR (root) or in a subfolder
+                string root = ConfigManager.Instance._funAsrModelFolderPath;
+                if (Directory.Exists(root))
                 {
-                    audioProcessingModelComboBox.Items.Add(new ComboBoxItem { Content = name });
+                    bool RootHasModel(string dir) =>
+                        File.Exists(Path.Combine(dir, "tokens.txt")) &&
+                        (File.Exists(Path.Combine(dir, "model.int8.onnx")) ||
+                         File.Exists(Path.Combine(dir, "model.onnx")));
+
+                    // Case 1: files placed directly in the FunASR root
+                    if (RootHasModel(root))
+                    {
+                        audioProcessingModelComboBox.Items.Add(new ComboBoxItem { Content = "(FunASR root)" });
+                    }
+
+                    // Case 2: model subfolders (e.g. extracted release folder)
+                    List<string> dirNames = Directory.GetDirectories(root)
+                        .Where(dir => RootHasModel(dir))
+                        .Select(dir => Path.GetFileName(dir))
+                        .Where(name => !string.IsNullOrEmpty(name))
+                        .OrderBy(name => name)
+                        .ToList()!;
+
+                    foreach (string name in dirNames)
+                    {
+                        if (uniqueNames.Add(name))
+                        {
+                            audioProcessingModelComboBox.Items.Add(new ComboBoxItem { Content = name });
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // Whisper: *.bin files directly under AudioModel
+                List<string?> fileNames = Directory.GetFiles(ConfigManager.Instance._audioProcessingModelFolderPath, "*.bin")
+                    .Select(Path.GetFileNameWithoutExtension)
+                    .Where(name => !string.IsNullOrEmpty(name))
+                    .OrderBy(name => name)
+                    .ToList();
+
+                foreach (string? name in fileNames)
+                {
+                    if (!string.IsNullOrEmpty(name) && uniqueNames.Add(name))
+                    {
+                        audioProcessingModelComboBox.Items.Add(new ComboBoxItem { Content = name });
+                    }
                 }
             }
         }
@@ -4612,9 +4861,50 @@ namespace RSTGameTranslation
         private void AudioProcessingProviderComboBox_SelectionChanged(object sender, SelectionChangedEventArgs e)
         {
             if (_isInitializing) return;
-            if (audioProcessingProviderComboBox.SelectedItem is ComboBoxItem selectedItem)
+
+            try
             {
-                ConfigManager.Instance.SetAudioProcessingProvider(selectedItem.Content.ToString() ?? "OpenAI Realtime API");
+                // If the audio service is running, confirm before switching provider
+                if (localWhisperService.Instance.IsRunning)
+                {
+                    MessageBoxResult result = MessageBox.Show(
+                        LocalizationManager.Instance.Strings["Msg_WhisperServiceRunning"],
+                        LocalizationManager.Instance.Strings["Title_Confirm"],
+                        MessageBoxButton.OKCancel,
+                        MessageBoxImage.Warning
+                    );
+                    if (result == MessageBoxResult.Cancel)
+                    {
+                        if (e.RemovedItems.Count > 0)
+                        {
+                            _isInitializing = true;
+                            audioProcessingProviderComboBox.SelectedItem = e.RemovedItems[0];
+                            _isInitializing = false;
+                        }
+                        return;
+                    }
+                    else
+                    {
+                        localWhisperService.Instance.Stop();
+                        audioServiceAutoTranslateCheckBox.IsChecked = false;
+                    }
+                }
+
+                if (audioProcessingProviderComboBox.SelectedItem is ComboBoxItem selectedItem)
+                {
+                    string provider = selectedItem.Content?.ToString() ?? "Whisper";
+                    ConfigManager.Instance.SetAudioProcessingProvider(provider);
+                    Console.WriteLine($"Audio processing provider set to: {provider}");
+                }
+
+                // Refresh provider-dependent UI: model list, whisper runtime row, download hint
+                LoadAllAudioProcessingModel();
+                UpdateProviderDependentVisibility();
+                UpdateAudioModelDownloadText(audioModelDownloadTextBlock);
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"Error updating audio processing provider: {ex.Message}");
             }
         }
 
@@ -4711,7 +5001,25 @@ namespace RSTGameTranslation
             try
             {
                 textBlock.Inlines.Clear();
-                
+
+                bool isFunAsr = string.Equals(ConfigManager.Instance.GetAudioProcessingProvider(), "FunASR", StringComparison.OrdinalIgnoreCase);
+
+                if (isFunAsr)
+                {
+                    textBlock.Inlines.Add(new Run(LocalizationManager.Instance.Strings["Tip_FunAsrModelDownload_Part1"]));
+
+                    var funAsrHyperlink = new Hyperlink(new Run("https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models"))
+                    {
+                        NavigateUri = new Uri("https://github.com/k2-fsa/sherpa-onnx/releases/tag/asr-models"),
+                        Foreground = System.Windows.Media.Brushes.Blue
+                    };
+                    funAsrHyperlink.RequestNavigate += Hyperlink_RequestNavigate;
+                    textBlock.Inlines.Add(funAsrHyperlink);
+
+                    textBlock.Inlines.Add(new Run(LocalizationManager.Instance.Strings["Tip_FunAsrModelDownload_Part2"]));
+                    return;
+                }
+
                 textBlock.Inlines.Add(new Run(LocalizationManager.Instance.Strings["Tip_AudioModelDownload_Part1"]));
                 
                 // Hyperlink

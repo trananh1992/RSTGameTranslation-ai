@@ -21,6 +21,7 @@ namespace RSTGameTranslation
         private readonly string _customApiConfigFilePath;
         private readonly string _googleTranslateConfigFilePath;
         public readonly string _audioProcessingModelFolderPath;
+        public readonly string _funAsrModelFolderPath;
         public readonly string _supertonicModelFolderPath;
         private readonly Dictionary<string, string> _configValues;
         private string _currentTranslationService = "Gemini"; // Default to Gemini
@@ -171,6 +172,9 @@ namespace RSTGameTranslation
         public const string SOURCE_LANGUAGE = "source_language";
         public const string TARGET_LANGUAGE = "target_language";
         public const string AUDIO_PROCESSING_PROVIDER = "audio_processing_provider";
+        public const string FUNASR_MODEL = "funasr_model";
+        public const string FUNASR_LANGUAGE = "funasr_language";
+        public const string FUNASR_MODEL_PRECISION = "funasr_model_precision";
         public const string OPENAI_REALTIME_API_KEY = "openai_realtime_api_key";
         public const string AUDIO_SERVICE_AUTO_TRANSLATE = "audio_service_auto_translate";
         public const string SILENT_THRESHOLD = "silent_threshold";
@@ -364,6 +368,7 @@ namespace RSTGameTranslation
             string appDirectory = AppDomain.CurrentDomain.BaseDirectory;
             _configFilePath = Path.Combine(appDirectory, "config.txt");
             _audioProcessingModelFolderPath = Path.Combine(appDirectory, "AudioModel");
+            _funAsrModelFolderPath = Path.Combine(appDirectory, "AudioModel", "FunASR");
             _supertonicModelFolderPath = Path.Combine(appDirectory, "Supertonic");
             _profileFolderPath = Path.Combine(appDirectory, "Profiles");
             _geminiConfigFilePath = Path.Combine(appDirectory, "gemini_config.txt");
@@ -374,6 +379,9 @@ namespace RSTGameTranslation
             _chatgptConfigFilePath = Path.Combine(appDirectory, "chatgpt_config.txt");
             _mistralConfigFilePath = Path.Combine(appDirectory, "mistral_config.txt");
             _googleTranslateConfigFilePath = Path.Combine(appDirectory, "google_translate_config.txt");
+
+            // Ensure the FunASR model folder exists so the settings UI can enumerate it
+            try { Directory.CreateDirectory(_funAsrModelFolderPath); } catch { }
 
             // Console.WriteLine($"Config file path: {_configFilePath}");
             // Console.WriteLine($"Profile folder path: {_profileFolderPath}");
@@ -605,6 +613,9 @@ namespace RSTGameTranslation
             _configValues[CUSTOM_API_MODEL] = "";
             _configValues[HOT_KEY_ENABLE] = "true";
             _configValues[AUDIO_PROCESSING_MODEL] = "ggml-tiny";
+            _configValues[FUNASR_MODEL] = "";
+            _configValues[FUNASR_LANGUAGE] = "auto";
+            _configValues[FUNASR_MODEL_PRECISION] = "fp32";
             _configValues[SILENT_THRESHOLD] = "0.02f";
             _configValues[SILENCE_DURATION_MS] = "500";
             _configValues[MAX_BUFFER_SAMPLES] = "3";
@@ -2093,6 +2104,47 @@ namespace RSTGameTranslation
             Console.WriteLine($"Audio processing model set to: {model}");
         }
 
+        // Get/Set FunASR (SenseVoice) model — folder name under AudioModel/FunASR
+        public string GetFunAsrModel()
+        {
+            return GetValue(FUNASR_MODEL, "");
+        }
+
+        public void SetFunAsrModel(string model)
+        {
+            _configValues[FUNASR_MODEL] = model;
+            SaveConfig();
+            Console.WriteLine($"FunASR model set to: {model}");
+        }
+
+        // Get/Set FunASR language hint: "auto" (default) or a specific language code (ja/en/zh/ko/yue).
+        // When "auto", SenseVoice auto-detects; a specific hint improves accuracy significantly.
+        public string GetFunAsrLanguage()
+        {
+            return GetValue(FUNASR_LANGUAGE, "auto");
+        }
+
+        public void SetFunAsrLanguage(string language)
+        {
+            _configValues[FUNASR_LANGUAGE] = language;
+            SaveConfig();
+            Console.WriteLine($"FunASR language set to: {language}");
+        }
+
+        // Get/Set FunASR model precision: "fp32" (default, more accurate, slower) or "int8" (faster).
+        public string GetFunAsrModelPrecision()
+        {
+            string v = GetValue(FUNASR_MODEL_PRECISION, "fp32");
+            return string.Equals(v, "int8", StringComparison.OrdinalIgnoreCase) ? "int8" : "fp32";
+        }
+
+        public void SetFunAsrModelPrecision(string precision)
+        {
+            _configValues[FUNASR_MODEL_PRECISION] = string.Equals(precision, "int8", StringComparison.OrdinalIgnoreCase) ? "int8" : "fp32";
+            SaveConfig();
+            Console.WriteLine($"FunASR model precision set to: {_configValues[FUNASR_MODEL_PRECISION]}");
+        }
+
         // Get/Set Whisper runtime (cpu, cuda, vulkan)
         public string GetWhisperRuntime()
         {
@@ -3316,7 +3368,13 @@ namespace RSTGameTranslation
 
         public string GetAudioProcessingProvider()
         {
-            return GetValue(AUDIO_PROCESSING_PROVIDER, "OpenAI Realtime API");
+            // Normalize legacy/unknown values ("WhisperX", "OpenAI Realtime API", ...) to "Whisper"
+            string provider = GetValue(AUDIO_PROCESSING_PROVIDER, "Whisper");
+            if (provider.StartsWith("FunASR", StringComparison.OrdinalIgnoreCase))
+            {
+                return "FunASR";
+            }
+            return "Whisper";
         }
         public void SetAudioProcessingProvider(string provider)
         {

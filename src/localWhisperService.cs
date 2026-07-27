@@ -6,25 +6,12 @@ using System.Threading;
 using System.Threading.Tasks;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
-using Whisper.net;
-using Whisper.net.Ggml;
-using Whisper.net.LibraryLoader;
 using System.Text.Json;
 using NAudio.CoreAudioApi;
 using System.Windows;
 
 namespace RSTGameTranslation
 {
-    /// <summary>
-    /// Enum to specify Whisper runtime types
-    /// </summary>
-    public enum WhisperRuntimeType
-    {
-        Cpu,
-        Cuda,   // NVIDIA GPU
-        Vulkan  // AMD/NVIDIA/Intel GPU
-    }
-
     public class localWhisperService
     {
         private WasapiLoopbackCapture? loopbackCapture;
@@ -36,8 +23,7 @@ namespace RSTGameTranslation
         public bool IsRunning => loopbackCapture != null && loopbackCapture.CaptureState == CaptureState.Capturing;
         private string _lastTranslatedText = "";
         private bool forceProcessing = false;
-        private WhisperProcessor? processor;
-        private WhisperFactory? factory;
+        private ISpeechRecognitionEngine? _engine;
         private readonly List<float> audioBuffer = new List<float>();
         private readonly object bufferLock = new object();
         private CancellationTokenSource? _cancellationTokenSource;
@@ -90,44 +76,18 @@ namespace RSTGameTranslation
             TaskScheduler.UnobservedTaskException += (s, e) => Stop();
         }
 
-        private string MapLanguageToWhisper(string language)
+        /// <summary>
+        /// Create the speech recognition engine based on the configured provider.
+        /// Defaults to Whisper for any legacy/unknown provider value.
+        /// </summary>
+        public ISpeechRecognitionEngine CreateEngine()
         {
-            return language.ToLower() switch
+            string provider = ConfigManager.Instance.GetAudioProcessingProvider();
+            if (provider.Contains("funasr", StringComparison.OrdinalIgnoreCase))
             {
-                "japanese" or "japan" or "ja" => "ja",
-                "english" or "en" => "en",
-                "chinese" or "zh" or "ch_sim" => "zh",
-                "korean" or "ko" => "ko",
-                "vietnamese" or "vi" => "vi",
-                "french" or "fr" => "fr",
-                "german" or "de" => "de",
-                "spanish" or "es" => "es",
-                "italian" or "it" => "it",
-                "portuguese" or "pt" => "pt",
-                "russian" or "ru" => "ru",
-                "hindi" or "hi" => "hi",
-                "indonesian" or "id" => "id",
-                "polish" or "pl" => "pl",
-                "arabic" or "ar" => "ar",
-                "dutch" or "nl" => "nl",
-                "romanian" or "ro" => "ro",
-                "persian" or "farsi" or "fa" => "fa",
-                "czech" or "cs" => "cs",
-                "bulgarian" or "bg" => "bg",
-                "thai" or "th" or "thailand" => "th",
-                "traditional chinese" or "ch_tra" => "zh",
-                "croatian" or "hr" => "hr",
-                "hungarian" or "hu" => "hu",
-                "turkish" or "tr" => "tr",
-                "sinhala" or "si" => "si",
-                "danish" or "da" => "da",
-                "ukrainian" or "uk" => "uk",
-                "finnish" or "fi" => "fi",
-                "central kurdish" or "ckb" => "ckb",
-                "bengali" or "bn" => "bn",
-                "greek" or "el" => "el",
-                _ => language
-            };
+                return new FunAsrSenseVoiceEngine();
+            }
+            return new WhisperEngine();
         }
 
         public Task StartServiceAsync(Action<string, string> onResult)
@@ -137,37 +97,10 @@ namespace RSTGameTranslation
 
             try
             {
-                string modelPath = ConfigManager.Instance.GetAudioProcessingModel() + ".bin";
-                string fullPath = Path.Combine(ConfigManager.Instance._audioProcessingModelFolderPath, modelPath);
-
-                // Get runtime from config
-                string runtimeSetting = ConfigManager.Instance.GetWhisperRuntime();
-                WhisperRuntimeType runtime = ParseRuntime(runtimeSetting);
-                
-                Console.WriteLine($"[Whisper] Loading model: {fullPath}");
-                Console.WriteLine($"[Whisper] Configured runtime: {runtimeSetting} -> {runtime}");
-
-                // Create factory with specified runtime
-                factory = CreateFactoryWithRuntime(fullPath, runtime);
-                
-                string current_source_language = MapLanguageToWhisper(ConfigManager.Instance.GetSourceLanguage());
-
-                // Get thread count from config (0 = auto, use all available cores)
-                int configThreadCount = ConfigManager.Instance.GetWhisperThreadCount();
-                int threadCount = configThreadCount > 0 ? configThreadCount : Math.Max(1, Environment.ProcessorCount);
-                Console.WriteLine($"[Whisper] Using {threadCount} threads (config: {configThreadCount}, 0=auto)");
-
-                var processorBuilder = factory.CreateBuilder()
-                    .WithLanguage(current_source_language)
-                    // Use Greedy sampling - much faster than Beam Search
-                    .WithGreedySamplingStrategy()
-                    .ParentBuilder
-                    // Optimize for speed
-                    .WithThreads(threadCount)
-                    // Disable context between segments for faster processing
-                    .WithNoContext();
-
-                processor = processorBuilder.Build();
+                // Create and initialize the speech recognition engine
+                _engine = CreateEngine();
+                Console.WriteLine($"[Audio] Speech engine: {_engine.GetType().Name}");
+                _engine.Initialize();
 
                 deviceEnumerator = new MMDeviceEnumerator();
                 var devices = deviceEnumerator.EnumerateAudioEndPoints(DataFlow.Render, DeviceState.Active);
@@ -209,97 +142,6 @@ namespace RSTGameTranslation
             }
 
             return Task.CompletedTask;
-        }
-
-        /// <summary>
-        /// Parse runtime string to enum
-        /// </summary>
-        private WhisperRuntimeType ParseRuntime(string setting)
-        {
-            return setting?.ToLower() switch
-            {
-                "cuda" or "nvidia" => WhisperRuntimeType.Cuda,
-                "vulkan" or "gpu" => WhisperRuntimeType.Vulkan,
-                _ => WhisperRuntimeType.Cpu
-            };
-        }
-
-        /// <summary>
-        /// Create WhisperFactory with specified runtime
-        /// Use RuntimeOptions.RuntimeLibraryOrder to select runtime
-        /// </summary>
-        private WhisperFactory CreateFactoryWithRuntime(string modelPath, WhisperRuntimeType runtime)
-        {
-            try
-            {
-                // Reset LoadedLibrary to force Whisper.net to reload with new order
-                RuntimeOptions.LoadedLibrary = null;
-                
-                // Set runtime priority order based on user choice
-                // NOTE: Only include runtimes you want to use in the list
-                switch (runtime)
-                {
-                    case WhisperRuntimeType.Cuda:
-                        Console.WriteLine("[Whisper] Setting runtime: CUDA only (fallback to CPU if unavailable)");
-                        RuntimeOptions.RuntimeLibraryOrder = new List<RuntimeLibrary>
-                        {
-                            RuntimeLibrary.Cuda,
-                            RuntimeLibrary.Cpu
-                        };
-                        break;
-
-                    case WhisperRuntimeType.Vulkan:
-                        Console.WriteLine("[Whisper] Setting runtime: Vulkan only (fallback to CPU if unavailable)");
-                        RuntimeOptions.RuntimeLibraryOrder = new List<RuntimeLibrary>
-                        {
-                            RuntimeLibrary.Vulkan,
-                            RuntimeLibrary.Cpu
-                        };
-                        break;
-
-                    case WhisperRuntimeType.Cpu:
-                    default:
-                        // CPU only - no GPUs in the list
-                        Console.WriteLine("[Whisper] Setting runtime: CPU ONLY (no GPU)");
-                        RuntimeOptions.RuntimeLibraryOrder = new List<RuntimeLibrary>
-                        {
-                            RuntimeLibrary.Cpu,
-                            RuntimeLibrary.CpuNoAvx  // Fallback if CPU does not support AVX
-                        };
-                        break;
-                }
-
-                Console.WriteLine($"[Whisper] RuntimeLibraryOrder set to: [{string.Join(", ", RuntimeOptions.RuntimeLibraryOrder)}]");
-                Console.WriteLine($"[Whisper] Creating factory with model: {modelPath}");
-                
-                var factory = WhisperFactory.FromPath(modelPath);
-                
-                if (RuntimeOptions.LoadedLibrary.HasValue)
-                {
-                    Console.WriteLine($"[Whisper] ✓ Actually loaded runtime: {RuntimeOptions.LoadedLibrary.Value}");
-                }
-                else
-                {
-                    Console.WriteLine("[Whisper] ⚠ LoadedLibrary is null - runtime unknown");
-                }
-                
-                return factory;
-            }
-            catch (Exception ex)
-            {
-                Console.WriteLine($"[Whisper] Error creating factory with {runtime}: {ex.Message}");
-                Console.WriteLine($"[Whisper] Stack trace: {ex.StackTrace}");
-                
-                // Fallback: reset to default and try again
-                Console.WriteLine("[Whisper] Falling back to CPU only");
-                RuntimeOptions.LoadedLibrary = null;
-                RuntimeOptions.RuntimeLibraryOrder = new List<RuntimeLibrary> 
-                { 
-                    RuntimeLibrary.Cpu, 
-                    RuntimeLibrary.CpuNoAvx 
-                };
-                return WhisperFactory.FromPath(modelPath);
-            }
         }
 
         private void OnGameAudioReceived(object? sender, WaveInEventArgs e)
@@ -369,11 +211,9 @@ namespace RSTGameTranslation
                 bufferedProvider = null;
                 processedProvider = null;
 
-                // Dispose whisper objects (after waiting for processingTask)
-                try { processor?.Dispose(); } catch { }
-                processor = null;
-                try { factory?.Dispose(); } catch { }
-                factory = null;
+                // Dispose speech engine (after waiting for processingTask)
+                try { _engine?.Dispose(); } catch { }
+                _engine = null;
 
                 audioBuffer.Clear();
                 _lastTranslatedText = "";
@@ -471,9 +311,9 @@ namespace RSTGameTranslation
                     if (samplesToProcess.Length > 0)
                     {
                         Console.WriteLine($"[DEBUG] Processing {samplesToProcess.Length} samples ({samplesToProcess.Length / 16000.0:F1}s audio)");
-                        if (processor == null || _isStopping)
+                        if (_engine == null || _isStopping)
                         {
-                            Console.WriteLine("[DEBUG] Skipping processing because processor is null or stopping");
+                            Console.WriteLine("[DEBUG] Skipping processing because engine is null or stopping");
                         }
                         else
                         {
@@ -533,16 +373,16 @@ namespace RSTGameTranslation
         {
             try
             {
-                if (processor == null || _isStopping)
+                if (_engine == null || _isStopping)
                 {
-                    Console.WriteLine("ProcessAudioAsync: processor null or stopping, returning");
+                    Console.WriteLine("ProcessAudioAsync: engine null or stopping, returning");
                     return;
                 }
 
-                await foreach (var result in processor.ProcessAsync(samples).WithCancellation(token))
-                {
-                    string originalText = result.Text.Trim();
+                IReadOnlyList<string> segments = await _engine.RecognizeAsync(samples, token);
 
+                foreach (var originalText in segments)
+                {
                     if (string.IsNullOrEmpty(originalText) || originalText.Length < 3)
                     {
                         continue;
@@ -594,7 +434,7 @@ namespace RSTGameTranslation
             }
             catch (Exception ex)
             {
-                Console.WriteLine("Whisper Error: " + ex.Message);
+                Console.WriteLine("Speech recognition error: " + ex.Message);
             }
         }
     }
