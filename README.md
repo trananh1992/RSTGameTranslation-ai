@@ -77,7 +77,7 @@ RST supports four TTS backends. Pick the one that fits your needs:
 2. Go to **Settings** → **OCR**: Select **OneOCR** 
 3. Go to **Settings** → **Language**: Choose languages
 4. Go to **Settings** → **Translation**: Select **Google Translate**
-5. Press button ***Select Window***: Choose window which you want to capture
+5. Press button ***Select Application***: Choose application which you want to capture
 6. Press **Alt+Q** to select area, then **Alt+F** to turn on Overlay
 7. Press **Alt+G** to start/stop
 
@@ -93,7 +93,7 @@ RST supports four TTS backends. Pick the one that fits your needs:
 
 3. **Start translating**:
    - Click **StartOCR** (if using external OCR) and wait until it starts successfully (You will see a red notification line at the bottom right corner)
-   - Press button ***Select Window***: Choose window which you want to capture
+   - Press button ***Select Application***: Choose application which you want to capture
    - Select area (Alt+Q) then turn on overlay (Alt+F)
    - Start translate (Alt+G)
 

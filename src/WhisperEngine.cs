@@ -55,8 +55,23 @@ namespace RSTGameTranslation
                 .ParentBuilder
                 // Optimize for speed
                 .WithThreads(threadCount)
-                // Disable context between segments for faster processing
-                .WithNoContext();
+                // Disable context between segments: stops a hallucinated phrase in one segment
+                // from being carried forward and repeated in every following segment.
+                .WithNoContext()
+                .WithMaxLastTextTokens(0)
+                // Anti-repetition / anti-hallucination decode thresholds. Without these,
+                // greedy decoding has no escape hatch when it enters a repetition loop —
+                // it just keeps emitting the same phrase until the segment ends.
+                // Temperature fallback: on detecting a degenerate result (entropy or average
+                // log-probability past the thresholds below), re-decode with a higher
+                // temperature. This is whisper's standard fix for stuck loops.
+                .WithTemperature(0.0f)
+                .WithTemperatureInc(0.2f)
+                .WithEntropyThreshold(2.4f)
+                .WithLogProbThreshold(-1.0f)
+                // Treat a segment as silence when the no-speech probability is high, instead of
+                // inventing subtitle-style filler for it.
+                .WithNoSpeechThreshold(0.6f);
 
             processor = processorBuilder.Build();
         }
@@ -68,6 +83,16 @@ namespace RSTGameTranslation
             {
                 Console.WriteLine("[Whisper] RecognizeAsync: processor null, returning");
                 return results;
+            }
+
+            // whisper.cpp needs at least ~1s of audio; a shorter buffer produces garbage or
+            // fails outright. Pad with silence rather than dropping the speech.
+            const int minSamples = 16000;
+            if (samples.Length < minSamples)
+            {
+                var padded = new float[minSamples];
+                Array.Copy(samples, padded, samples.Length);
+                samples = padded;
             }
 
             await foreach (var result in processor.ProcessAsync(samples).WithCancellation(token))

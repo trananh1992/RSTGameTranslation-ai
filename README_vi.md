@@ -77,7 +77,7 @@ RST hỗ trợ 4 backend TTS. Chọn backend phù hợp với nhu cầu:
 2. Vào **Cài đặt** → **OCR**: Chọn **OneOCR**
 3. Vào **Cài đặt** → **Language**: Chọn ngôn ngữ nguồn và đích
 4. Vào **Cài đặt** → **Translation**: Chọn **Google Translate**
-5. Nhấn nút ***Select Window***: Chọn cửa sổ bạn muốn chụp
+5. Nhấn nút ***Chọn ứng dụng***: Chọn ứng dụng bạn muốn chụp
 6. Nhấn **Alt+Q** để chọn vùng, sau đó **Alt+F** để bật Overlay
 7. Nhấn **Alt+G** để bắt đầu/dừng dịch
 
@@ -93,7 +93,7 @@ RST hỗ trợ 4 backend TTS. Chọn backend phù hợp với nhu cầu:
    
 3. **Bắt đầu dịch**:
    - Nhấn **StartOCR** (nếu sử dụng OCR bên thứ 3) và đợi cho đến khi khởi động thành công (Bạn sẽ thấy một dòng thông báo màu đỏ ở góc dưới bên phải)
-   - Nhấn nút ***Select Window***: Chọn cửa sổ bạn muốn chụp
+   - Nhấn nút ***Chọn ứng dụng***: Chọn ứng dụng bạn muốn chụp
    - Chọn vùng (Alt+Q) sau đó bật overlay (Alt+F)
    - Bắt đầu dịch (Alt+G)
 

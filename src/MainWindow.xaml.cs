@@ -1072,7 +1072,7 @@ namespace RSTGameTranslation
             monitorWindowLeft = selectedTranslationArea.X;
             monitorWindowTop = selectedTranslationArea.Y;
 
-            Console.WriteLine($"MonitorWindow positioned at physical: X={selectedTranslationArea.X}, Y={selectedTranslationArea.Y}, W={selectedTranslationArea.Width}, H={selectedTranslationArea.Height}");
+            // Console.WriteLine($"MonitorWindow positioned at physical: X={selectedTranslationArea.X}, Y={selectedTranslationArea.Y}, W={selectedTranslationArea.Width}, H={selectedTranslationArea.Height}");
         }
 
         // Add method for show/hide the main window
@@ -1338,7 +1338,7 @@ namespace RSTGameTranslation
             monitorWindowLeft = physX;
             monitorWindowTop = physY;
 
-            Console.WriteLine($"MonitorWindow positioned at physical: X={physX}, Y={physY}, W={physW}, H={physH}");
+            // Console.WriteLine($"MonitorWindow positioned at physical: X={physX}, Y={physY}, W={physW}, H={physH}");
         }
 
         private void UpdateCaptureRect()

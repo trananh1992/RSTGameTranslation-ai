@@ -7,6 +7,7 @@ using System.Threading.Tasks;
 using NAudio.Wave;
 using NAudio.Wave.SampleProviders;
 using System.Text.Json;
+using System.Threading.Channels;
 using NAudio.CoreAudioApi;
 using System.Windows;
 
@@ -19,30 +20,66 @@ namespace RSTGameTranslation
         private ISampleProvider? processedProvider;
         private WaveFileWriter? debugWriter;
         private WaveFileWriter? debugWriterProcessed;
-        int minBytesToProcess = 32000; // ~2 seconds @ 16kHz 16-bit mono
+        // Minimum number of bytes that must sit in bufferedProvider (in *capture* format,
+        // e.g. 48kHz/stereo/float) before we try to read one VAD frame out of the resampler.
+        // Computed from the real capture format in StartServiceAsync — a hard-coded value is
+        // wrong because the capture format varies per device.
+        private int minSourceBytesPerFrame = 4096;
         public bool IsRunning => loopbackCapture != null && loopbackCapture.CaptureState == CaptureState.Capturing;
-        private string _lastTranslatedText = "";
-        private bool forceProcessing = false;
+        // Last few emitted lines, used for exact-duplicate suppression.
+        private readonly Queue<string> _recentTexts = new Queue<string>();
+        private const int RecentTextHistory = 5;
         private ISpeechRecognitionEngine? _engine;
         private readonly List<float> audioBuffer = new List<float>();
         private readonly object bufferLock = new object();
         private CancellationTokenSource? _cancellationTokenSource;
         private float SilenceThreshold => ConfigManager.Instance.GetSilenceThreshold();
         private int SilenceDurationMs => ConfigManager.Instance.GetSilenceDurationMs();
-        private DateTime lastVoiceDetected = DateTime.Now;
         private bool isSpeaking = false;
-        // Max audio buffer (samples at 16kHz). Smaller = faster processing but may cut long speech
-        private int MaxBufferSamples => 16000 * Math.Min(ConfigManager.Instance.GetMaxBufferSamples(), 10);
+        // Hard ceiling on one segment (samples @16kHz). Whisper's own window is 30s, so we allow
+        // long sentences; the config value is clamped up to at least 10s because cutting earlier
+        // than that splits ordinary speech mid-sentence.
+        private int HardLimitSamples => 16000 * Math.Clamp(ConfigManager.Instance.GetMaxBufferSamples(), 10, 28);
+        // Silence threshold in samples (converted from ms) — uses sample count, not wall clock,
+        // so it stays accurate even when recognition blocks.
+        private int SilenceDurationSamples => 16000 * SilenceDurationMs / 1000;
+
+        // VAD frame = 30ms @16kHz. Small frames give accurate speech/silence boundaries; a 1s
+        // frame averages speech and silence into a single RMS value and smears every boundary.
+        private const int VadFrameSamples = 480;
+        // Consecutive voiced frames required to declare speech. Rejects single-frame noise spikes.
+        private const int MinVoiceFrames = 2;
+        // Audio kept from *before* speech onset so the first syllable is not clipped.
+        private const int PreRollSamples = 16000 * 300 / 1000;
+        // Silence kept *after* speech so the last word is not clipped.
+        private const int TrailingSilenceSamples = 16000 * 250 / 1000;
+        // Never send less speech than this to the engine. Sub-300ms fragments (and pure silence)
+        // are the main cause of Whisper hallucinating repeated filler phrases.
+        private const int MinVoicedSamples = 16000 * 300 / 1000;
         private int voiceFrameCount = 0;
-        private const int MinVoiceFrames = 1;
+
+        // Lines Whisper/SenseVoice emit when fed silence or music rather than speech.
+        // NOTE: deliberately does not blanket-drop text starting with "thank"/"please" — that
+        // discarded ordinary speech. Only the known full-phrase hallucinations are matched.
         private static readonly System.Text.RegularExpressions.Regex NoisePattern =
             new System.Text.RegularExpressions.Regex(
-                @"^\[.*\]$|^\(.*\)$|^\.{3,}$|^thank|^please|inaudible|blank",
+                @"^\s*[\[\(][^\]\)]*[\]\)]\s*$"                    // [Music], (laughter)
+                + @"|^[\s\.\-–—_·、。，,!?！？~♪]*$"                  // punctuation / music-only
+                + @"|inaudible|blank_audio"
+                + @"|thank(s| you) for watching|please subscribe|subscribe to (my|our) channel"
+                + @"|ご視聴ありがとうございました|字幕(by|を提供)"
+                + @"|请不吝点赞|订阅 ?转发|打赏支持|明镜与点点",
                 System.Text.RegularExpressions.RegexOptions.IgnoreCase
             );
 
         // new fields
         private Task? processingTask;
+        // Single-consumer recognition queue. The capture loop only enqueues, so it never blocks
+        // on a slow decode, and exactly one decode runs at a time — concurrent calls into the
+        // engine reordered output and produced duplicated lines.
+        private Channel<float[]>? segmentChannel;
+        private Task? recognizeTask;
+        private const int MaxQueuedSegments = 4;
         private MMDeviceEnumerator? deviceEnumerator;
         // Flag to indicate Stop() is in progress to avoid races with processing task
         private volatile bool _isStopping = false;
@@ -117,12 +154,28 @@ namespace RSTGameTranslation
                 // debugWriter = new WaveFileWriter("debug_audio_raw.wav", loopbackCapture.WaveFormat);
                 bufferedProvider = new BufferedWaveProvider(loopbackCapture.WaveFormat);
                 bufferedProvider.DiscardOnBufferOverflow = true;
+                bufferedProvider.BufferDuration = TimeSpan.FromSeconds(60);
+                // CRITICAL: ReadFully defaults to true, which makes Read() pad the request with
+                // zeroes whenever the capture buffer is short. That injected fabricated silence
+                // into the middle of speech, diluted the VAD's RMS, and fed Whisper shredded
+                // audio — the root cause of truncated and endlessly repeated transcriptions.
+                bufferedProvider.ReadFully = false;
 
                 // Build pipeline: Buffered -> Sample -> Resample (16k) -> Mono
                 var sampleProvider = bufferedProvider.ToSampleProvider();
                 var resampler = new WdlResamplingSampleProvider(sampleProvider, 16000);
-                bufferedProvider.BufferDuration = TimeSpan.FromSeconds(60);
                 processedProvider = resampler.ToMono();
+
+                // One 30ms 16kHz frame needs this many bytes of source audio. Reading before that
+                // much has arrived yields short frames and a noisier VAD.
+                minSourceBytesPerFrame = Math.Max(
+                    loopbackCapture.WaveFormat.BlockAlign,
+                    (int)((long)VadFrameSamples * loopbackCapture.WaveFormat.AverageBytesPerSecond / 16000));
+                Console.WriteLine($"[Audio] Capture format: {loopbackCapture.WaveFormat}, " +
+                                  $"{minSourceBytesPerFrame} src bytes per 30ms frame");
+                Console.WriteLine($"[Audio] VAD: threshold={SilenceThreshold:F4} (RMS), " +
+                                  $"pause={SilenceDurationMs}ms, max segment={HardLimitSamples / 16000.0:F0}s " +
+                                  $"(config {ConfigManager.Instance.GetMaxBufferSamples()}s, clamped to 10-28s)");
 
                 // Setup debug writer for 16k 16bit mono
                 var targetFormat = new WaveFormat(16000, 16, 1);
@@ -132,7 +185,19 @@ namespace RSTGameTranslation
                 loopbackCapture.StartRecording();
 
                 _cancellationTokenSource = new CancellationTokenSource();
-                processingTask = Task.Run(() => ProcessLoop(onResult, _cancellationTokenSource.Token));
+                var token = _cancellationTokenSource.Token;
+
+                // Bounded queue with a single reader: decoding stays strictly sequential and in
+                // order, while the capture loop is never blocked by a slow decode.
+                segmentChannel = Channel.CreateBounded<float[]>(new BoundedChannelOptions(MaxQueuedSegments)
+                {
+                    FullMode = BoundedChannelFullMode.DropOldest,
+                    SingleReader = true,
+                    SingleWriter = true
+                });
+
+                recognizeTask = Task.Run(() => RecognizeLoop(onResult, token));
+                processingTask = Task.Run(() => ProcessLoop(token));
             }
             catch (Exception ex)
             {
@@ -172,20 +237,32 @@ namespace RSTGameTranslation
                 // Cancel processing loop
                 try { _cancellationTokenSource?.Cancel(); } catch { }
 
-                // Dispose token source
+                // Signal the recognition consumer that no more segments are coming
+                try { segmentChannel?.Writer.TryComplete(); } catch { }
+
+                // Wait for both loops to finish. Must happen before _engine is disposed,
+                // otherwise a decode in flight touches a disposed native processor.
+                // The recognition loop gets a longer grace period because a decode already
+                // running cannot be cancelled mid-call.
+                foreach (var (task, timeoutMs) in new[] { (processingTask, 3000), (recognizeTask, 10000) })
+                {
+                    try
+                    {
+                        if (task != null && !task.IsCompleted)
+                        {
+                            task.Wait(timeoutMs);
+                        }
+                    }
+                    catch (AggregateException) { }
+                    catch (Exception) { }
+                }
+                processingTask = null;
+                recognizeTask = null;
+                segmentChannel = null;
+
+                // Dispose token source only after the loops observed the cancellation
                 try { _cancellationTokenSource?.Dispose(); } catch { }
                 _cancellationTokenSource = null;
-
-                // Wait for processingTask to finish (longer timeout)
-                try
-                {
-                    if (processingTask != null && !processingTask.IsCompleted)
-                    {
-                        processingTask.Wait(3000);
-                    }
-                }
-                catch (AggregateException) { }
-                catch (Exception) { }
 
                 // Unregister event and stop loopback
                 if (loopbackCapture != null)
@@ -215,8 +292,13 @@ namespace RSTGameTranslation
                 try { _engine?.Dispose(); } catch { }
                 _engine = null;
 
-                audioBuffer.Clear();
-                _lastTranslatedText = "";
+                lock (bufferLock)
+                {
+                    audioBuffer.Clear();
+                }
+                isSpeaking = false;
+                voiceFrameCount = 0;
+                _recentTexts.Clear();
             }
             catch (Exception ex)
             {
@@ -228,99 +310,127 @@ namespace RSTGameTranslation
             }
         }
 
-        private async Task ProcessLoop(Action<string, string> onResult, CancellationToken cancellationToken)
+        /// <summary>
+        /// Capture/VAD loop. Reads 30ms frames out of the resampler, classifies each frame as
+        /// voice or silence, accumulates an utterance, and enqueues it for recognition once the
+        /// speaker pauses. Never calls the engine directly, so a slow decode cannot stall capture.
+        /// </summary>
+        private async Task ProcessLoop(CancellationToken cancellationToken)
         {
-            float[] readBuffer = new float[4000]; // Max read ~0.25s @ 16kHz for faster response
+            float[] frame = new float[VadFrameSamples];
+            // Silence is tracked in samples, not wall-clock time, so the measurement stays correct
+            // regardless of how long a decode takes.
+            int silenceSamples = 0;
+            int framesSinceLog = 0;
+
             while (loopbackCapture != null && !cancellationToken.IsCancellationRequested && !_isStopping)
             {
-                // 1. Consumer: Read from Resampler & VAD Check
-                if (processedProvider != null && bufferedProvider != null && bufferedProvider.BufferedBytes > minBytesToProcess)
+                bool cutNow = false;
+                bool hardCut = false;
+
+                // 1. Drain everything the resampler currently holds, one VAD frame at a time.
+                // ReadFully is false, so Read() returns 0 once the capture buffer runs dry
+                // instead of handing back zero-padded silence.
+                while (processedProvider != null && bufferedProvider != null
+                       && bufferedProvider.BufferedBytes >= minSourceBytesPerFrame
+                       && !cancellationToken.IsCancellationRequested && !_isStopping)
                 {
+                    int samplesRead;
                     try
                     {
-                        int samplesRead = processedProvider.Read(readBuffer, 0, readBuffer.Length);
-                        if (samplesRead > 0)
-                        {
-                            var newSamples = new float[samplesRead];
-                            Array.Copy(readBuffer, newSamples, samplesRead);
-
-                            // Debug Writer (Float -> Short)
-                            if (debugWriterProcessed != null)
-                            {
-                                var byteBuffer = new byte[samplesRead * 2];
-                                for (int i = 0; i < samplesRead; i++)
-                                {
-                                    short s = (short)Math.Max(short.MinValue, Math.Min(short.MaxValue, (newSamples[i] * 32768f)));
-                                    BitConverter.GetBytes(s).CopyTo(byteBuffer, i * 2);
-                                }
-                                debugWriterProcessed.Write(byteBuffer, 0, byteBuffer.Length);
-                            }
-
-                            // VAD Logic
-                            float maxVol = newSamples.Max(x => Math.Abs(x));
-                            if (maxVol > SilenceThreshold)
-                            {
-                                lastVoiceDetected = DateTime.Now;
-                                isSpeaking = true;
-                                voiceFrameCount++;
-                            }
-                            else
-                            {
-                                if ((DateTime.Now - lastVoiceDetected).TotalMilliseconds > SilenceDurationMs)
-                                {
-                                    voiceFrameCount = 0;
-                                }
-                            }
-
-                            // Buffer Accumulation
-                            lock (bufferLock)
-                            {
-                                audioBuffer.AddRange(newSamples);
-                                if (audioBuffer.Count > MaxBufferSamples)
-                                {
-                                    Console.WriteLine($"Warning: Audio buffer exceeded {MaxBufferSamples} samples, forcing cut");
-                                    forceProcessing = true;
-                                }
-                            }
-                        }
+                        samplesRead = processedProvider.Read(frame, 0, VadFrameSamples);
                     }
                     catch (Exception ex)
                     {
                         Console.WriteLine($"Error reading audio pipe: {ex.Message}");
-                    }
-                }
-
-                // 2. Processing Logic
-                bool shouldProcess = forceProcessing ||
-                                    (isSpeaking && (DateTime.Now - lastVoiceDetected).TotalMilliseconds > SilenceDurationMs);
-
-                // if (isSpeaking) Console.WriteLine($"[DEBUG] Speaking... Buf: {audioBuffer.Count}");
-
-                if (shouldProcess)
-                {
-                    float[] samplesToProcess;
-                    lock (bufferLock)
-                    {
-                        samplesToProcess = audioBuffer.ToArray();
-                        audioBuffer.Clear();
-                        forceProcessing = false;
+                        break;
                     }
 
-                    isSpeaking = false; // Reset VAD state
+                    if (samplesRead <= 0) break;
 
-                    if (samplesToProcess.Length > 0)
+                    WriteDebugFrame(frame, samplesRead);
+
+                    // RMS over a 30ms window is a meaningful loudness estimate for one frame.
+                    double sumSq = 0;
+                    for (int i = 0; i < samplesRead; i++)
                     {
-                        Console.WriteLine($"[DEBUG] Processing {samplesToProcess.Length} samples ({samplesToProcess.Length / 16000.0:F1}s audio)");
-                        if (_engine == null || _isStopping)
+                        float v = frame[i];
+                        sumSq += v * v;
+                    }
+                    float rms = (float)Math.Sqrt(sumSq / samplesRead);
+                    bool isVoice = rms > SilenceThreshold;
+
+                    if (isVoice)
+                    {
+                        voiceFrameCount++;
+                        if (voiceFrameCount >= MinVoiceFrames)
                         {
-                            Console.WriteLine("[DEBUG] Skipping processing because engine is null or stopping");
+                            // Sustained voice: this is speech, restart the silence window.
+                            isSpeaking = true;
+                            silenceSamples = 0;
                         }
                         else
                         {
-                            await ProcessAudioAsync(samplesToProcess, onResult, cancellationToken);
+                            // Possibly just a noise spike — decay rather than reset, so one loud
+                            // frame in a pause cannot keep an utterance open forever.
+                            silenceSamples = Math.Max(0, silenceSamples - samplesRead);
                         }
                     }
-                    voiceFrameCount = 0;
+                    else
+                    {
+                        voiceFrameCount = 0;
+                        if (isSpeaking) silenceSamples += samplesRead;
+                    }
+
+                    lock (bufferLock)
+                    {
+                        if (isSpeaking)
+                        {
+                            audioBuffer.AddRange(new ReadOnlySpan<float>(frame, 0, samplesRead));
+                            if (audioBuffer.Count >= HardLimitSamples)
+                            {
+                                hardCut = true;
+                                cutNow = true;
+                            }
+                        }
+                        else
+                        {
+                            // Before speech starts, keep only a short pre-roll. Previously the
+                            // buffer accumulated unbounded silence until the hard limit fired,
+                            // which handed Whisper seconds of pure silence to hallucinate over.
+                            audioBuffer.AddRange(new ReadOnlySpan<float>(frame, 0, samplesRead));
+                            if (audioBuffer.Count > PreRollSamples)
+                            {
+                                audioBuffer.RemoveRange(0, audioBuffer.Count - PreRollSamples);
+                            }
+                        }
+                    }
+
+                    if (isSpeaking && silenceSamples >= SilenceDurationSamples)
+                    {
+                        cutNow = true;
+                    }
+
+                    // Periodic VAD log so the threshold can be tuned from the console
+                    if (++framesSinceLog >= 33 && isSpeaking) // ~1s
+                    {
+                        framesSinceLog = 0;
+                        int bufCount;
+                        lock (bufferLock) bufCount = audioBuffer.Count;
+                        Console.WriteLine($"[VAD] rms={rms:F4} thr={SilenceThreshold:F4} " +
+                                          $"silence={silenceSamples / 16000.0:F2}s/{SilenceDurationMs / 1000.0:F2}s " +
+                                          $"buf={bufCount / 16000.0:F1}s");
+                    }
+
+                    // Cut immediately rather than draining more audio into this utterance.
+                    if (cutNow) break;
+                }
+
+                // 2. An utterance ended (pause detected) or hit the hard ceiling.
+                if (cutNow)
+                {
+                    float[] segment = ExtractSegment(hardCut, ref silenceSamples);
+                    if (segment.Length > 0) EnqueueSegment(segment);
                 }
 
                 try
@@ -334,15 +444,178 @@ namespace RSTGameTranslation
             }
         }
 
+        private void WriteDebugFrame(float[] frame, int samplesRead)
+        {
+            if (debugWriterProcessed == null) return;
+            var byteBuffer = new byte[samplesRead * 2];
+            for (int i = 0; i < samplesRead; i++)
+            {
+                short s = (short)Math.Max(short.MinValue, Math.Min(short.MaxValue, frame[i] * 32768f));
+                BitConverter.GetBytes(s).CopyTo(byteBuffer, i * 2);
+            }
+            debugWriterProcessed.Write(byteBuffer, 0, byteBuffer.Length);
+        }
 
-        private bool IsRepetitiveText(string text)
+        /// <summary>
+        /// Take the finished utterance out of audioBuffer.
+        /// On a normal (pause-triggered) cut the whole buffer is consumed, minus the trailing
+        /// silence beyond <see cref="TrailingSilenceSamples"/>.
+        /// On a hard cut the speaker is still talking, so the buffer is split at the quietest
+        /// point near the end — cutting at an arbitrary sample chopped words in half, which is
+        /// what produced half-sentences and made Whisper guess at the fragments.
+        /// </summary>
+        private float[] ExtractSegment(bool hardCut, ref int silenceSamples)
+        {
+            float[] segment;
+            lock (bufferLock)
+            {
+                if (hardCut && audioBuffer.Count > 16000 * 2)
+                {
+                    int split = FindQuietestSplit(audioBuffer);
+                    segment = audioBuffer.GetRange(0, split).ToArray();
+                    audioBuffer.RemoveRange(0, split);
+                    // Speech continues into the retained tail — stay in the speaking state.
+                    silenceSamples = 0;
+                    Console.WriteLine($"[Audio] Hard limit reached, split at {split / 16000.0:F1}s, " +
+                                      $"kept {audioBuffer.Count / 16000.0:F1}s for the next segment");
+                }
+                else
+                {
+                    // Drop silence past the small tail we keep so the last word is not clipped.
+                    int excessSilence = Math.Max(0, silenceSamples - TrailingSilenceSamples);
+                    int keep = Math.Max(0, audioBuffer.Count - excessSilence);
+                    segment = audioBuffer.GetRange(0, keep).ToArray();
+                    audioBuffer.Clear();
+                    isSpeaking = false;
+                    silenceSamples = 0;
+                    voiceFrameCount = 0;
+                }
+            }
+            return segment;
+        }
+
+        /// <summary>
+        /// Find the lowest-energy 30ms frame in the last ~2s of the buffer and return its start
+        /// index, so a forced split lands in a gap between words rather than inside one.
+        /// </summary>
+        private static int FindQuietestSplit(List<float> buffer)
+        {
+            int searchStart = Math.Max(0, buffer.Count - 16000 * 2);
+            // Leave at least 0.5s in the buffer so the next segment has some context.
+            int searchEnd = buffer.Count - 16000 / 2;
+            if (searchEnd - searchStart < VadFrameSamples) return buffer.Count;
+
+            int bestIndex = buffer.Count;
+            double bestEnergy = double.MaxValue;
+            for (int start = searchStart; start + VadFrameSamples <= searchEnd; start += VadFrameSamples)
+            {
+                double sumSq = 0;
+                for (int i = start; i < start + VadFrameSamples; i++)
+                {
+                    sumSq += (double)buffer[i] * buffer[i];
+                }
+                if (sumSq < bestEnergy)
+                {
+                    bestEnergy = sumSq;
+                    bestIndex = start;
+                }
+            }
+            return bestIndex;
+        }
+
+        /// <summary>
+        /// Hand a finished utterance to the recognition consumer, dropping segments that hold
+        /// too little actual speech (they only ever produced hallucinated filler).
+        /// </summary>
+        private void EnqueueSegment(float[] segment)
+        {
+            if (_engine == null || _isStopping || segmentChannel == null)
+            {
+                Console.WriteLine("[DEBUG] Skipping processing because engine is null or stopping");
+                return;
+            }
+
+            int voiced = CountVoicedSamples(segment);
+            if (voiced < MinVoicedSamples)
+            {
+                Console.WriteLine($"[Audio] Discarding {segment.Length / 16000.0:F1}s segment: " +
+                                  $"only {voiced / 16000.0:F2}s of speech (min {MinVoicedSamples / 16000.0:F2}s)");
+                return;
+            }
+
+            Console.WriteLine($"[DEBUG] Queueing {segment.Length} samples " +
+                              $"({segment.Length / 16000.0:F1}s audio, {voiced / 16000.0:F1}s speech)");
+
+            // DropOldest: if decoding cannot keep up, prefer recent audio over a growing backlog.
+            if (segmentChannel.Reader.Count >= MaxQueuedSegments)
+            {
+                Console.WriteLine($"[Audio] Warning: recognition is behind ({segmentChannel.Reader.Count} " +
+                                  "segments queued), dropping the oldest. Consider a smaller model or GPU runtime.");
+            }
+            segmentChannel.Writer.TryWrite(segment);
+        }
+
+        /// <summary>
+        /// Total duration of frames in the segment that are above the silence threshold.
+        /// </summary>
+        private int CountVoicedSamples(float[] segment)
+        {
+            float threshold = SilenceThreshold;
+            int voiced = 0;
+            for (int start = 0; start + VadFrameSamples <= segment.Length; start += VadFrameSamples)
+            {
+                double sumSq = 0;
+                for (int i = start; i < start + VadFrameSamples; i++)
+                {
+                    sumSq += (double)segment[i] * segment[i];
+                }
+                if (Math.Sqrt(sumSq / VadFrameSamples) > threshold) voiced += VadFrameSamples;
+            }
+            return voiced;
+        }
+
+        /// <summary>
+        /// Single consumer of the segment queue: decodes one segment at a time, in order.
+        /// Running decodes concurrently (the previous fire-and-forget approach) interleaved
+        /// results and raced the duplicate-suppression state, duplicating lines.
+        /// </summary>
+        private async Task RecognizeLoop(Action<string, string> onResult, CancellationToken cancellationToken)
+        {
+            var channel = segmentChannel;
+            if (channel == null) return;
+
+            try
+            {
+                await foreach (var segment in channel.Reader.ReadAllAsync(cancellationToken))
+                {
+                    if (_isStopping || cancellationToken.IsCancellationRequested) break;
+                    await ProcessAudioAsync(segment, onResult, cancellationToken);
+                }
+            }
+            catch (OperationCanceledException)
+            {
+                // expected on Stop()
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"RecognizeLoop error: {ex.Message}");
+            }
+        }
+
+
+        /// <summary>
+        /// Last-resort check for a line that is almost entirely one repeated word.
+        /// Only applied to reasonably long lines: the old threshold (any word making up >40% of
+        /// a 3-word line) rejected ordinary short speech such as "I know, I know".
+        /// </summary>
+        private static bool IsRepetitiveText(string text)
         {
             if (string.IsNullOrEmpty(text)) return false;
 
             string[] words = text.Split(new[] { ' ', ',', '.', '!', '?' },
                 StringSplitOptions.RemoveEmptyEntries);
 
-            if (words.Length < 3) return false;
+            if (words.Length < 8) return false;
 
             var wordCounts = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
             foreach (var word in words)
@@ -359,13 +632,175 @@ namespace RSTGameTranslation
             foreach (var count in wordCounts.Values)
             {
                 double ratio = (double)count / totalWords;
-                if (ratio > 0.4)
+                if (ratio > 0.5)
                 {
                     Console.WriteLine($"[REPETITION] Word repeats {ratio:P0} of text");
                     return true;
                 }
             }
 
+            return false;
+        }
+
+        /// <summary>
+        /// Collapse a stuck decoder loop ("no no no no" / "そうそうそうそう") down to a single
+        /// occurrence, keeping the rest of the sentence. Previously such a line was discarded
+        /// whole, which lost the surrounding words along with the repetition.
+        /// Works on words first, then on raw character n-grams for languages without spaces.
+        /// </summary>
+        private static string CollapseRepeats(string text)
+        {
+            if (string.IsNullOrEmpty(text)) return text;
+
+            // Word level: collapse runs of a phrase repeated 3+ times in a row. Covers both a
+            // single stuck word ("no no no no") and a stuck phrase ("Get out of here!" x3),
+            // which the character pass below cannot reach once the phrase exceeds 12 chars.
+            // A run of 2 is normal emphasis ("I know, I know") and is left alone.
+            if (text.Contains(' '))
+            {
+                var words = text.Split(' ', StringSplitOptions.RemoveEmptyEntries);
+                for (int n = 1; n <= 8 && n * 3 <= words.Length; n++)
+                {
+                    words = CollapseWordRuns(words, n, 3);
+                }
+                text = string.Join(' ', words);
+            }
+
+            // Character n-gram level, for CJK where there are no word boundaries.
+            for (int n = 1; n <= 12; n++)
+            {
+                // Short n-grams need more repeats before we treat them as a loop, so that
+                // legitimate doubling such as "ますます" survives.
+                int minRepeats = n <= 2 ? 4 : 3;
+                text = CollapseNGramRuns(text, n, minRepeats);
+            }
+
+            return text;
+        }
+
+        /// <summary>
+        /// Collapse consecutive repetitions of an n-word phrase down to one occurrence.
+        /// </summary>
+        private static string[] CollapseWordRuns(string[] words, int n, int minRepeats)
+        {
+            var kept = new List<string>(words.Length);
+            int i = 0;
+            while (i < words.Length)
+            {
+                int repeats = 1;
+                if (i + n * minRepeats <= words.Length)
+                {
+                    while (i + (repeats + 1) * n <= words.Length &&
+                           PhrasesEqual(words, i, i + repeats * n, n))
+                    {
+                        repeats++;
+                    }
+                }
+
+                if (repeats >= minRepeats)
+                {
+                    for (int k = 0; k < n; k++) kept.Add(words[i + k]);
+                    i += repeats * n;
+                }
+                else
+                {
+                    kept.Add(words[i]);
+                    i++;
+                }
+            }
+            return kept.ToArray();
+        }
+
+        private static bool PhrasesEqual(string[] words, int a, int b, int n)
+        {
+            for (int k = 0; k < n; k++)
+            {
+                if (!string.Equals(TrimWord(words[a + k]), TrimWord(words[b + k]),
+                                   StringComparison.OrdinalIgnoreCase))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private static string TrimWord(string word) =>
+            word.Trim(' ', ',', '.', '!', '?', '"', '\'', ';', ':', '、', '。', '！', '？');
+
+        private static string CollapseNGramRuns(string text, int n, int minRepeats)
+        {
+            if (text.Length < n * minRepeats) return text;
+
+            var sb = new System.Text.StringBuilder(text.Length);
+            int i = 0;
+            while (i < text.Length)
+            {
+                if (i + n * minRepeats <= text.Length)
+                {
+                    var unit = text.AsSpan(i, n);
+                    int repeats = 1;
+                    while (i + (repeats + 1) * n <= text.Length &&
+                           text.AsSpan(i + repeats * n, n).SequenceEqual(unit))
+                    {
+                        repeats++;
+                    }
+                    if (repeats >= minRepeats)
+                    {
+                        sb.Append(unit);
+                        i += repeats * n;
+                        continue;
+                    }
+                }
+                sb.Append(text[i]);
+                i++;
+            }
+            return sb.ToString();
+        }
+
+        private static string NormalizeForCompare(string text)
+        {
+            var sb = new System.Text.StringBuilder(text.Length);
+            foreach (char c in text)
+            {
+                if (char.IsLetterOrDigit(c)) sb.Append(char.ToLowerInvariant(c));
+            }
+            return sb.ToString();
+        }
+
+        /// <summary>
+        /// True if this line was already emitted recently. Only exact (normalized) matches are
+        /// suppressed — the old rule also dropped any line contained in the previous one, which
+        /// silently swallowed short follow-up sentences.
+        /// </summary>
+        private bool IsDuplicate(string text)
+        {
+            string normalized = NormalizeForCompare(text);
+            if (normalized.Length == 0) return true;
+
+            string? last = _recentTexts.Count > 0 ? _recentTexts.Last() : null;
+
+            // Back-to-back identical output is the same audio decoded twice.
+            if (last == normalized) return true;
+
+            if (normalized.Length >= 15)
+            {
+                // Only long lines are matched against the wider history. Short lines such as
+                // "はい。" or "Yes." legitimately recur in dialogue, and suppressing every
+                // recurrence within the last few utterances silently dropped real speech.
+                foreach (var previous in _recentTexts)
+                {
+                    if (previous == normalized) return true;
+                }
+
+                // A long line fully contained in the previous one is a re-emission of that audio.
+                if (last != null && last.Length > normalized.Length && last.Contains(normalized))
+                {
+                    return true;
+                }
+            }
+
+            _recentTexts.Enqueue(normalized);
+            while (_recentTexts.Count > RecentTextHistory) _recentTexts.Dequeue();
             return false;
         }
 
@@ -381,35 +816,23 @@ namespace RSTGameTranslation
 
                 IReadOnlyList<string> segments = await _engine.RecognizeAsync(samples, token);
 
-                foreach (var originalText in segments)
+                foreach (var rawText in segments)
                 {
-                    if (string.IsNullOrEmpty(originalText) || originalText.Length < 3)
-                    {
-                        continue;
-                    }
+                    if (string.IsNullOrWhiteSpace(rawText)) continue;
 
-                    if (NoisePattern.IsMatch(originalText))
-                    {
-                        continue;
-                    }
-                    if (originalText.Length < 5 || originalText.All(c => c == '.'))
-                    {
-                        continue;
-                    }
+                    // Repair a stuck decoder loop instead of throwing the whole line away.
+                    string originalText = CollapseRepeats(rawText).Trim();
 
-                    string currentNormal = originalText.ToLower().Replace(".", "").Replace("!", "").Replace("?", "").Trim();
-                    string lastNormal = _lastTranslatedText.ToLower().Replace(".", "").Replace("!", "").Replace("?", "").Trim();
-                    if (currentNormal == lastNormal || (lastNormal.Contains(currentNormal) && currentNormal.Length > 5))
-                    {
-                        continue;
-                    }
-                    _lastTranslatedText = originalText;
-                    if (IsRepetitiveText(originalText))
-                    {
+                    // No length floor in characters: a 5-character minimum discarded ordinary
+                    // short lines, which for Japanese/Chinese can be a whole sentence ("はい。").
+                    // Require only that something readable is left.
+                    if (!originalText.Any(char.IsLetterOrDigit)) continue;
 
-                        continue;
-                    }
+                    if (NoisePattern.IsMatch(originalText)) continue;
 
+                    if (IsRepetitiveText(originalText)) continue;
+
+                    if (IsDuplicate(originalText)) continue;
 
                     await System.Windows.Application.Current.Dispatcher.InvokeAsync(() =>
                     {

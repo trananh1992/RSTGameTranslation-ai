@@ -304,7 +304,7 @@ namespace RSTGameTranslation
             SetWindowPos(hwnd, IntPtr.Zero, x, y, width, height,
                 SWP_NOZORDER | SWP_NOACTIVATE | SWP_NOOWNERZORDER);
             
-            Console.WriteLine($"DpiHelper: Positioned window at physical ({x}, {y}, {width}x{height})");
+            // Console.WriteLine($"DpiHelper: Positioned window at physical ({x}, {y}, {width}x{height})");
         }
         
         /// <summary>
