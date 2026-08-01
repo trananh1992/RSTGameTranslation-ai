@@ -177,10 +177,14 @@ namespace RSTGameTranslation
 
                 ConfigManager.Instance.SetOcrMethod(configOcrMethod);
                 ConfigManager.Instance.SetTranslationService(configTransService);
-                if(ConfigManager.Instance.GetAudioProcessingProvider() == "FunASR")
-                {
-                    localWhisperService.Instance.CreateEngine().Initialize();
-                }
+
+                // NOTE: do not build a speech engine here. This used to call
+                // localWhisperService.Instance.CreateEngine().Initialize() when the provider was
+                // FunASR, which loaded the whole SenseVoice ONNX model (239 MB int8 / 938 MB fp32)
+                // synchronously on the UI thread — so the Settings window did not appear until the
+                // load finished. The engine was also never stored or disposed, so each time
+                // Settings opened it leaked another native recognizer. The engine that actually
+                // gets used is created by StartServiceAsync when audio capture starts.
 
                 Console.WriteLine("Settings window fully loaded and initialized. Changes will now be saved.");
             }

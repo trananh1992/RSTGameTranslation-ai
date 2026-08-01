@@ -116,8 +116,11 @@ namespace RSTGameTranslation
         /// <summary>
         /// Create the speech recognition engine based on the configured provider.
         /// Defaults to Whisper for any legacy/unknown provider value.
+        /// Private on purpose: Initialize() loads the full model, so the engine must only ever be
+        /// built by StartServiceAsync. Calling this from UI code froze the window on a model load
+        /// and leaked the engine, since nothing disposed it.
         /// </summary>
-        public ISpeechRecognitionEngine CreateEngine()
+        private ISpeechRecognitionEngine CreateEngine()
         {
             string provider = ConfigManager.Instance.GetAudioProcessingProvider();
             if (provider.Contains("funasr", StringComparison.OrdinalIgnoreCase))
