@@ -3148,6 +3148,7 @@ namespace RSTGameTranslation
                 whisperThreadCountTextBox.Visibility = Visibility.Visible;
                 whisperThreadCountTip.Visibility = Visibility.Visible;
                 if (funAsrDownloadButton != null) funAsrDownloadButton.Visibility = Visibility.Visible;
+                if (whisperDownloadButton != null) whisperDownloadButton.Visibility = Visibility.Collapsed;
                 if (funAsrLanguageLabel != null) funAsrLanguageLabel.Visibility = Visibility.Visible;
                 if (funAsrLanguageComboBox != null) funAsrLanguageComboBox.Visibility = Visibility.Visible;
                 if (funAsrPrecisionLabel != null) funAsrPrecisionLabel.Visibility = Visibility.Visible;
@@ -3158,10 +3159,30 @@ namespace RSTGameTranslation
             {
                 UpdateWhisperThreadCountVisibility(ConfigManager.Instance.GetWhisperRuntime());
                 if (funAsrDownloadButton != null) funAsrDownloadButton.Visibility = Visibility.Collapsed;
+                if (whisperDownloadButton != null) whisperDownloadButton.Visibility = Visibility.Visible;
                 if (funAsrLanguageLabel != null) funAsrLanguageLabel.Visibility = Visibility.Collapsed;
                 if (funAsrLanguageComboBox != null) funAsrLanguageComboBox.Visibility = Visibility.Collapsed;
                 if (funAsrPrecisionLabel != null) funAsrPrecisionLabel.Visibility = Visibility.Collapsed;
                 if (funAsrPrecisionComboBox != null) funAsrPrecisionComboBox.Visibility = Visibility.Collapsed;
+                RefreshWhisperModelStatus();
+            }
+        }
+
+        /// <summary>
+        /// Show the "no model installed" hint only while app/AudioModel has no *.bin at all.
+        /// Mirrors RefreshFunAsrModelStatus().
+        /// </summary>
+        private void RefreshWhisperModelStatus()
+        {
+            if (audioModelDownloadTextBlock == null) return;
+            try
+            {
+                bool installed = WhisperModelDownloader.IsAnyModelInstalled();
+                audioModelDownloadTextBlock.Visibility = installed ? Visibility.Collapsed : Visibility.Visible;
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"RefreshWhisperModelStatus error: {ex.Message}");
             }
         }
 
@@ -3595,6 +3616,57 @@ namespace RSTGameTranslation
             finally
             {
                 if (supertonicDownloadButton != null) supertonicDownloadButton.IsEnabled = true;
+            }
+        }
+
+        // ==================== Whisper model download ====================
+
+        /// <summary>
+        /// Open the model picker, then select whatever was downloaded so the user does not have to
+        /// find it in the dropdown afterwards.
+        /// </summary>
+        private void WhisperDownloadButton_Click(object sender, RoutedEventArgs e)
+        {
+            try
+            {
+                if (whisperDownloadButton != null) whisperDownloadButton.IsEnabled = false;
+
+                var picker = new WhisperModelPickerWindow { Owner = this };
+                picker.ShowDialog();
+
+                string? downloaded = picker.DownloadedModelBaseName;
+                if (!string.IsNullOrEmpty(downloaded))
+                {
+                    // Rebuild the dropdown so the new *.bin shows up, then select it.
+                    LoadAllAudioProcessingModel();
+
+                    foreach (var item in audioProcessingModelComboBox.Items)
+                    {
+                        if (item is ComboBoxItem cb &&
+                            string.Equals(cb.Content?.ToString(), downloaded, StringComparison.OrdinalIgnoreCase))
+                        {
+                            audioProcessingModelComboBox.SelectedItem = cb;
+                            break;
+                        }
+                    }
+                    if (audioProcessingModelComboBox.SelectedItem == null &&
+                        audioProcessingModelComboBox.Items.Count > 0)
+                    {
+                        audioProcessingModelComboBox.SelectedIndex = 0;
+                    }
+                }
+
+                RefreshWhisperModelStatus();
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show(
+                    $"Error: {ex.Message}", "Download error",
+                    MessageBoxButton.OK, MessageBoxImage.Error);
+            }
+            finally
+            {
+                if (whisperDownloadButton != null) whisperDownloadButton.IsEnabled = true;
             }
         }
 
@@ -4513,8 +4585,12 @@ namespace RSTGameTranslation
             }
             else
             {
-                // Whisper: *.bin files directly under AudioModel
+                // Whisper: *.bin files directly under AudioModel.
+                // The extra EndsWith filter is not redundant: a 3-character extension in a search
+                // pattern also matches longer extensions via 8.3 name aliasing, so "*.bin" alone
+                // would list unrelated files such as "notes.binary" as selectable models.
                 List<string?> fileNames = Directory.GetFiles(ConfigManager.Instance._audioProcessingModelFolderPath, "*.bin")
+                    .Where(path => path.EndsWith(".bin", StringComparison.OrdinalIgnoreCase))
                     .Select(Path.GetFileNameWithoutExtension)
                     .Where(name => !string.IsNullOrEmpty(name))
                     .OrderBy(name => name)

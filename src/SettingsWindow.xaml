@@ -2144,6 +2144,13 @@
                                             HorizontalAlignment="Left"
                                             Visibility="Collapsed"
                                             Click="FunAsrDownloadButton_Click"/>
+                                    <Button x:Name="whisperDownloadButton"
+                                            Content="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Btn_DownloadWhisperModel]}"
+                                            Margin="0,0,0,5"
+                                            Padding="8,3"
+                                            HorizontalAlignment="Left"
+                                            Visibility="Collapsed"
+                                            Click="WhisperDownloadButton_Click"/>
                                 </StackPanel>
                                 <TextBlock Text="{Binding Source={x:Static local:LocalizationManager.Instance}, Path=Strings[Lbl_VolumeThreshold]}" Grid.Row="6" Grid.Column="0" VerticalAlignment="Center" Margin="0,0,10,0"/>
                                 <TextBox x:Name="silenceThresholdTextBox" Grid.Row="6" Grid.Column="1" Margin="0,5" Text="0.01" LostFocus="SilenceThresholdTextBox_LostFocus"/>
